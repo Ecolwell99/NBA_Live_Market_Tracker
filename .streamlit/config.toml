@@ -1,0 +1,18 @@
+[theme]
+base = "dark"
+primaryColor = "#5b8dd6"
+backgroundColor = "#101318"
+secondaryBackgroundColor = "#171b22"
+textColor = "#dfe4ec"
+font = "sans serif"
+
+[client]
+showSidebarNavigation = false
+toolbarMode = "minimal"
+
+[server]
+# Play-by-play polling is driven by st_autorefresh, not by file watching.
+fileWatcherType = "auto"
+
+[browser]
+gatherUsageStats = false

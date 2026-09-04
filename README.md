@@ -1,0 +1,315 @@
+# NBA Live Market Tracker
+
+Internal Streamlit tool for sportsbook traders and QC analysts. Tracks live NBA
+play-by-play, results the first-event / timeframe / second-half markets that can
+be determined directly from play-by-play, and flags stat corrections — separating
+market-impacting corrections from harmless feed churn.
+
+Layout and terminology follow `NBA Tracker Layout.xlsx`.
+
+```
+nba_live_tracker/
+├── app.py                  # the whole app (12 commented sections)
+├── requirements.txt
+├── .gitignore
+├── .streamlit/config.toml  # dark compact theme
+└── .tracker_state/         # created at runtime, gitignored
+```
+
+---
+
+## 1. Running it
+
+### Locally
+
+```bash
+python -m venv .venv
+source .venv/Scripts/activate     # Git Bash on Windows
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+### Flow
+
+1. **Load Live Games** (sidebar) — pulls today's slate. Change **Slate date** for
+   another day.
+2. **Select a game** — live games sort first, then upcoming, then finals.
+3. Both rosters load automatically.
+4. Pick **two key players per team** from the roster dropdowns.
+5. **Track Game** — starts polling and enables the three tabs.
+
+No play-by-play request is made until you press **Track Game**. Once tracking, the
+app auto-refreshes every 4s (15s if the game has not tipped off, and not at all
+once the game is final). **Refresh now** in the sidebar forces a fetch.
+
+**Edit Key Players** sits inside the Live tab. It writes to the same canonical
+slot as the sidebar control, so changing key players mid-game does not reset the
+correction log, first-basket results, or key-player alert history.
+
+---
+
+## 2. Deploying to Streamlit Cloud from GitHub
+
+### 2.1 Create the repo and push
+
+Run these from Git Bash, in order:
+
+```bash
+cd /c/Users/e.colwell/nba_live_tracker
+git init
+git add .
+git commit -m "NBA Live Market Tracker: initial version"
+git branch -M main
+```
+
+Create an empty GitHub repo named `NBA_Live_Market_Tracker` (no README, no
+.gitignore — the repo must be empty), then:
+
+```bash
+cd /c/Users/e.colwell/nba_live_tracker
+git remote add origin https://github.com/Ecolwell99/NBA_Live_Market_Tracker.git
+git push -u origin main
+```
+
+Verify:
+
+```bash
+cd /c/Users/e.colwell/nba_live_tracker
+git status
+git log --oneline -1
+```
+
+### 2.2 Deploy
+
+1. Go to <https://share.streamlit.io> and sign in with the same GitHub account.
+2. **Create app** → **Deploy a public app from GitHub**.
+3. Fill in:
+   - **Repository:** `Ecolwell99/NBA_Live_Market_Tracker`
+   - **Branch:** `main`
+   - **Main file path:** `app.py`
+4. **Advanced settings** → **Python version:** `3.11` (3.11 or 3.12 both work;
+   pin one so a future default change cannot break the build).
+5. **Deploy**. First build installs `requirements.txt` and takes 1–3 minutes.
+
+No secrets or environment variables are needed — every endpoint used is public
+and unauthenticated.
+
+### 2.3 Pushing a change later
+
+```bash
+cd /c/Users/e.colwell/nba_live_tracker
+git add -A
+git commit -m "<what changed>"
+git push
+```
+
+Streamlit Cloud redeploys on push. If it does not, use **Manage app → Reboot**.
+
+### 2.4 Streamlit Cloud caveats
+
+- **`.tracker_state/` does not survive a container restart.** On Cloud the
+  filesystem is ephemeral, so the JSON sidecar only protects you against a hard
+  browser refresh within the same container — which is what it is for. Session
+  state is the real store; the sidecar is best-effort. If the app is rebooted
+  mid-game, press **Track Game** again and the correction log restarts from a
+  fresh baseline (the log is append-only *within a tracking session*, per spec).
+- **The app sleeps after inactivity** on the free tier. Wake it before tip-off,
+  not at tip-off.
+- **One container, shared state.** Every viewer gets their own session state, so
+  two traders watching the same game each keep their own correction log. That is
+  fine for QC, but two people will not see each other's dismissals.
+
+---
+
+## 3. Data source: what was chosen and why
+
+### Chosen: ESPN public JSON
+
+```
+https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard
+https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={id}
+https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{id}/roster
+```
+
+The official NBA feed was tried first and rejected on evidence, not preference:
+
+| Endpoint | Result from this network |
+|---|---|
+| `cdn.nba.com/static/json/liveData/playbyplay/...` | **HTTP 403** (Akamai "Access Denied") — persists with browser `User-Agent`, `Referer` and `Origin` headers |
+| `stats.nba.com/stats/playbyplayv3` | **timeout**, no response at all |
+| `www.nba.com/robots.txt` | 200 — so it is the CDN JSON specifically that is blocked, not NBA.com |
+| `site.api.espn.com/...` (ESPN) | **200**, and already the working provider in the existing `nfl_qc_tool` |
+
+Every field the markets depend on was verified against a real ESPN NBA payload
+before any code was written:
+
+| Need | ESPN field | Verified |
+|---|---|---|
+| FG attempt, and 2 vs 3 | `shootingPlay` + `pointsAttempted` | ✅ free throws also carry `shootingPlay: true` with `pointsAttempted: 1`, so FG detection requires `pointsAttempted in (2, 3)` |
+| Made vs missed | `scoringPlay` / `scoreValue` | ✅ misses report `scoreValue: 0` |
+| Shot detail / dunk | `type.text` (e.g. `"Driving Dunk Shot"`) | ✅ |
+| Shooter | `participants[0].athlete.id` | ✅ correct even on blocked shots, where the *description* leads with the blocker's name |
+| Team | `team.id` | ✅ |
+| Clock bucketing | `period.number`, `clock.displayValue` | ✅ |
+| Score at the time | `awayScore` / `homeScore` on each play | ✅ |
+| Starters | `boxscore.players[].statistics[].athletes[].starter` | ✅ exactly 5 per team, once the boxscore publishes |
+| Roster | `athletes` (flat list for NBA), `jersey`, `position.abbreviation` | ✅ |
+
+### Swapping providers later
+
+All source-specific code is confined to **SECTION 3 (fetch)** and **SECTION 4
+(normalise)**. Everything downstream — markets, correction engine, UI — operates
+only on the neutral frozen `GameEvent` dataclass. To move to the NBA CDN feed from
+a network that can reach it, rewrite those two sections and nothing else.
+`parse_clock_seconds` already handles the NBA CDN's ISO-8601 clock shape
+(`PT11M39.00S`) alongside ESPN's `M:SS` and sub-minute `SS.T`.
+
+---
+
+## 4. Known limitations
+
+Read this section before resulting anything off the tool.
+
+### 4.1 Live starters
+
+- **Before tip-off, ESPN publishes no lineup.** The boxscore `starter` flag only
+  appears once the boxscore itself does — around tip-off, not before.
+- `resolve_starters()` therefore falls back in three steps, and the UI **always
+  prints which one is in use** under each player table:
+  1. `boxscore ... starter: true` — real starters. Trust this.
+  2. **First five distinct players from that team to appear in play-by-play** — a
+     good proxy a minute into the quarter, but a fast substitution or a player
+     whose first action is a rebound can distort it.
+  3. **Roster order** — labelled as such. This is **not a lineup**. Do not result
+     a prematch player market off it.
+- Consequence: the Prematch tab's per-player tables are only reliable once source
+  (1) is live. Check the "Lineup source" line, every time.
+
+### 4.2 Dunk classification
+
+- Dunks come from a **text match on the feed's shot type** (`\bdunk`,
+  case-insensitive, word-boundary anchored), because ESPN exposes no dunk flag.
+- The word boundary matters: the mock-up's own `Ryan Dunn` would otherwise
+  register as a dunk. Names ending in "Dunn"/"Dunning" are safe; a shot type
+  ESPN chooses to word differently would not be caught.
+- **ESPN's own classification is inconsistent.** Some finishes come through as
+  `"Layup Shot"` when broadcast called a dunk, and alley-oops are sometimes
+  `"Alley Oop Layup"`. First Dunk markets should be QC'd against video, not
+  resulted off the feed alone.
+- Only **made** dunks resolve First Dunk. A missed/blocked dunk attempt does not.
+- If ESPN later reclassifies a layup as a dunk, that **is** caught — category 8
+  below.
+
+### 4.3 Stat corrections
+
+This is where the tool is most useful and also where it is most opinionated.
+
+**How detection works.** Every poll, the tracked events (FG / FT / turnover only —
+rebounds, fouls and substitutions are excluded to keep the diff quiet) are
+fingerprinted and diffed against the previous snapshot. Three shapes are logged:
+
+- **REMOVED** — an event id in the previous snapshot is gone.
+- **CHANGED** — same id, different fingerprint.
+- **INSERTED** — an id we have not seen that is *not normal forward progress*.
+
+**Insertion is the hard case, and it is guarded twice.** ESPN's
+`sequenceNumber` values are sparse and non-contiguous (4, 7, 8, 9, 11, 13…),
+which makes them look like stable per-play ids — but how a *retroactive*
+insertion gets numbered could not be confirmed against live data. So an unseen
+event counts as a correction if **either** its sequence sits at or below the
+watermark, **or** its game clock is more than `RETROACTIVE_TOLERANCE_SECONDS`
+(45s) behind the live edge. Belt and braces, deliberately.
+
+**Market-impacting categories** (the eight from the spec):
+
+1. Made shot added or removed
+2. Missed shot added or removed
+3. Make → miss, or miss → make
+4. Two-pointer → three-pointer, or vice versa
+5. Shooter attribution changed
+6. Team attribution changed
+7. Shot → turnover, or turnover → shot
+8. Dunk classification added or removed
+
+**One deliberate addition — a ninth category.** Made free throw added, removed or
+flipped is flagged as market-impacting, because it moves **Timeframe Both Teams
+To Score** (any made FT is a score inside a window). It is not in the spec's list
+of eight, so it is gated behind `FLAG_SCORING_FT_CHANGES = True` in SECTION 1 —
+set it to `False` to get exactly the eight canonical categories.
+
+**Changes deliberately treated as non-impacting** (logged, visible under *All
+Corrections*, never banner-worthy): period adjusted, clock adjusted, score
+adjusted, shot type detail reworded, description reworded.
+
+**False-positive sources that are actively suppressed:**
+
+- **Player name text.** Names come from an id→name map that fills in as the
+  boxscore publishes, so the *text* changes with no correction behind it.
+  `player_id` is the sole authority for shooter attribution (category 5); the
+  name string is excluded from comparison entirely.
+- **Whitespace / formatting.** All text is normalised (`"Bad Pass\nTurnover"` →
+  `"Bad Pass Turnover"`) before fingerprinting.
+- **Coordinates, shot distance, assist credit.** Excluded from the fingerprint —
+  they churn constantly and move no market in this tool.
+- **Truncated payloads.** If the feed returns fewer than
+  `REMOVAL_SANITY_RATIO` (90%) of the previous play count, removal detection is
+  **skipped for that cycle** and a feed warning shows in the banner, rather than
+  logging every missing play as a correction.
+- **The first poll never logs.** It establishes the baseline snapshot and returns
+  nothing, so pressing Track Game mid-game does not dump the whole first half
+  into the log as insertions.
+
+**What the tool cannot see:**
+
+- **Corrections ESPN never publishes.** If the official scorer fixes a stat and
+  ESPN does not update its play-by-play, there is nothing to diff. This tool
+  detects *feed* corrections, which is a subset of *stat* corrections.
+- **Corrections that landed before you pressed Track Game.** Baseline is taken at
+  that moment.
+- **Silent id reuse.** If ESPN were to reassign an existing play id to a
+  different event without changing the fingerprint's market fields, that would
+  read as unchanged. Not observed, but not detectable either.
+- **Corrections after the game goes final.** Polling stops when the game is
+  final, so post-game stat corrections (the most common kind in the NBA) are not
+  caught. Keep the tab open and press **Refresh now** if you need to check.
+
+**The log is append-only.** A correction is never removed because the feed changed
+again later, and an event corrected twice logs twice — dedupe is on the
+*transition* (`event_id | original | updated | impacting`), not on the event. The
+same correction will not re-log on every 4s refresh, and the banner will not
+re-flash the same correction; it stays visible for `CORRECTION_BANNER_SECONDS`
+(120s) then clears.
+
+### 4.4 Timeframe Both Teams To Score
+
+- Windows are **upper-bound inclusive**: `12:00` lands in `12:00–11:01`, `11:01`
+  lands in `12:00–11:01`, `11:00` lands in `11:00–10:01`. `int((720 - clock) // 60)`.
+- The final window `1:00–0:00` is inclusive of `0.0`, so a buzzer-beater counts.
+- Any **made** score counts — field goal or free throw — which is what the market
+  prices.
+- A window shows `-` until it is fully complete, then `Yes` or `No`. Completion is
+  taken from the lowest clock reached in that period, an explicit end-of-period
+  play, or the game being final.
+- **ESPN's sub-minute clock has no colon** (`"51.7"` not `"0:51.7"`). This is
+  handled, but it is the single most likely place a provider change breaks
+  bucketing — every event in the last minute of a quarter depends on it.
+- Overtime uses 5-minute periods (5 windows), regulation 12 (12 windows).
+
+### 4.5 Other
+
+- **Second-half markets** activate once a Q3 event appears in the feed, and read
+  only from period ≥ 3 events.
+- **Workbook vs prompt conflict — timeframe row order.** The mock-up sheet lists
+  the windows reverse-chronologically (`1:00–0:00` at the top); the written spec
+  lists them chronologically. Chronological is the default, per the written spec.
+  Set `TIMEFRAME_ORDER = "reverse"` in SECTION 1 to match the sheet.
+- **Number of recent attempts** is one constant: `RECENT_FG_COUNT = 3`.
+- **Rate limits.** ESPN's public endpoints are unauthenticated and undocumented,
+  with no published limit. Fetches are cached (`scoreboard` 20s, `summary` ~3s,
+  `roster` 1h) and a `429` surfaces as a "DATA DELAY" banner rather than a
+  traceback. Nothing is requested until tracking starts.
+- **All markets in the spec are supported by the data structures and the
+  correction engine**, but this first version surfaces the tables the workbook
+  draws (first-event, recent attempts, key players, timeframe, second half). The
+  Possession Result and Next-FG-Attempt markets resolve from the same
+  `GameEvent` primitives in SECTION 5 and are not yet given their own tables.
