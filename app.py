@@ -42,6 +42,7 @@ import html
 import json
 import re
 import time
+from copy import deepcopy
 from dataclasses import dataclass, asdict, field
 from datetime import date, datetime
 from pathlib import Path
@@ -310,6 +311,22 @@ def _team_from_raw(raw: dict) -> TeamInfo:
     )
 
 
+def _game_from_dict(g: dict) -> GameInfo:
+    """Rehydrate a GameInfo from the plain-dict form kept in session_state."""
+    return GameInfo(
+        game_id=g["game_id"],
+        start_iso=g["start_iso"],
+        state=g["state"],
+        status_detail=g["status_detail"],
+        period=g["period"],
+        display_clock=g["display_clock"],
+        away=TeamInfo(**g["away"]),
+        home=TeamInfo(**g["home"]),
+        away_score=g["away_score"],
+        home_score=g["home_score"],
+    )
+
+
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_scoreboard(day: str | None) -> list[dict]:
     """Games for `day` (YYYYMMDD). Pass None to let the feed decide 'today'.
@@ -362,24 +379,80 @@ def fetch_scoreboard(day: str | None) -> list[dict]:
 
 def list_games(day: str | None) -> list[GameInfo]:
     """Scoreboard as GameInfo, sorted live -> upcoming -> final."""
-    out = [
-        GameInfo(
-            game_id=g["game_id"],
-            start_iso=g["start_iso"],
-            state=g["state"],
-            status_detail=g["status_detail"],
-            period=g["period"],
-            display_clock=g["display_clock"],
-            away=TeamInfo(**g["away"]),
-            home=TeamInfo(**g["home"]),
-            away_score=g["away_score"],
-            home_score=g["home_score"],
-        )
-        for g in fetch_scoreboard(day)
-    ]
+    out = [_game_from_dict(g) for g in fetch_scoreboard(day)]
     rank = {"in": 0, "pre": 1, "post": 2}
     out.sort(key=lambda g: (rank.get(g.state, 3), g.start_iso))
     return out
+
+
+# --- manual game ID -------------------------------------------------------
+# Traders need to track a game the scoreboard will not hand us: a game on a
+# different slate, one the scoreboard has already dropped, or any game at all
+# when the scoreboard endpoint itself is failing. The summary endpoint is keyed
+# only on the event id, so it works in every one of those cases.
+
+_GAME_ID_RE = re.compile(r"(\d{6,})")
+
+
+def extract_game_id(text: str) -> str:
+    """Accept a bare ESPN event id or a pasted ESPN game URL.
+
+    'https://www.espn.com/nba/game/_/gameId/401810433/magic-grizzlies' -> '401810433'
+    """
+    found = _GAME_ID_RE.search(str(text or ""))
+    return found.group(1) if found else ""
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_game_header(game_id: str) -> dict:
+    """One game's identity + status from the summary endpoint's `header` block.
+
+    Same plain-dict shape as `fetch_scoreboard` entries so both paths feed the
+    identical downstream code.
+
+    NOTE: unlike the scoreboard, the summary header's `status` carries only
+    `type` - there is no `period` and no `displayClock`. Both are returned empty.
+    Nothing downstream depends on them: every market derives the period and clock
+    from the play-by-play itself (see `TrackedGame.max_period`).
+    """
+    payload = _http_get_json(f"{ESPN_BASE}/summary?event={game_id}")
+    header = payload.get("header") or {}
+    comps = header.get("competitions") or []
+    if not comps:
+        raise DataSourceError(f"ID {game_id} is not an NBA game on this feed.")
+    comp = comps[0]
+    stype = ((comp.get("status") or {}).get("type")) or {}
+
+    away_raw = home_raw = None
+    away_score = home_score = 0
+    for c in comp.get("competitors") or []:
+        try:
+            score = int(float(c.get("score") or 0))
+        except (TypeError, ValueError):
+            score = 0
+        if c.get("homeAway") == "home":
+            home_raw, home_score = c.get("team") or {}, score
+        elif c.get("homeAway") == "away":
+            away_raw, away_score = c.get("team") or {}, score
+    if not away_raw or not home_raw:
+        raise DataSourceError(f"ID {game_id} did not return two NBA teams.")
+
+    return {
+        "game_id": str(header.get("id") or game_id),
+        "start_iso": comp.get("date") or "",
+        "state": stype.get("state", "pre"),
+        "status_detail": stype.get("shortDetail") or stype.get("description") or "",
+        "period": 0,
+        "display_clock": "",
+        "away": asdict(_team_from_raw(away_raw)),
+        "home": asdict(_team_from_raw(home_raw)),
+        "away_score": away_score,
+        "home_score": home_score,
+    }
+
+
+def game_from_id(game_id: str) -> GameInfo:
+    return _game_from_dict(fetch_game_header(game_id))
 
 
 @st.cache_data(ttl=max(REFRESH_SECONDS - 1, 2), show_spinner=False)
@@ -1225,6 +1298,8 @@ DEFAULT_STATE: dict[str, Any] = {
     "games": [],
     "games_error": None,
     "games_loaded": False,
+    "manual_ids": set(),      # game ids added by hand, not from the scoreboard
+    "manual_error": None,
     "scoreboard_day": None,
     "selected_game_id": None,
     "tracking": False,
@@ -1265,11 +1340,11 @@ SAVE_THROTTLE_SECONDS = 10
 
 
 def init_state() -> None:
+    # deepcopy, not .copy(): key_players is a dict OF LISTS, and a shallow copy
+    # would hand every session the same inner lists as the module-level default.
     for key, value in DEFAULT_STATE.items():
         if key not in st.session_state:
-            st.session_state[key] = (
-                value.copy() if isinstance(value, (dict, list, set)) else value
-            )
+            st.session_state[key] = deepcopy(value)
 
 
 def _state_path(game_id: str) -> Path:
@@ -1318,8 +1393,7 @@ def load_state(game_id: str) -> bool:
 
 def clear_state(game_id: str) -> None:
     for key in CLEARED_KEYS:
-        default = DEFAULT_STATE[key]
-        st.session_state[key] = default.copy() if isinstance(default, (dict, list, set)) else default
+        st.session_state[key] = deepcopy(DEFAULT_STATE[key])
     st.session_state.kp_alerts = []
     st.session_state.kp_active = set()
     st.session_state.banner_dismissed_key = None
@@ -1564,6 +1638,57 @@ def key_player_controls(container, side: str, team: TeamInfo,
         )
 
 
+def render_manual_id_entry(sb) -> None:
+    """Add a game by ESPN game ID, bypassing the scoreboard entirely.
+
+    The added game is merged into the same `games` list the selectbox reads, so
+    from that point on it behaves exactly like a game picked off the slate.
+    """
+    with sb.expander("Add game by ID"):
+        st.caption(
+            "Paste an ESPN game ID or game URL. Use this for a game that is not "
+            "on the selected slate, or when the scoreboard itself is unavailable."
+        )
+        raw_id = st.text_input(
+            "ESPN game ID",
+            key="manual_game_id",
+            placeholder="401810433",
+            label_visibility="collapsed",
+            disabled=st.session_state.tracking,
+        )
+        if st.button("Add Game ID", disabled=st.session_state.tracking):
+            gid = extract_game_id(raw_id)
+            if not gid:
+                st.session_state.manual_error = (
+                    "Enter a numeric ESPN game ID, or paste the full game URL."
+                )
+            else:
+                try:
+                    blob = fetch_game_header(gid)
+                except DataSourceError as exc:
+                    st.session_state.manual_error = str(exc)
+                else:
+                    st.session_state.manual_error = None
+                    # Replace any existing entry for this id, then put it first so
+                    # the selectbox lands on the game just added.
+                    others = [
+                        g for g in st.session_state.games if g["game_id"] != blob["game_id"]
+                    ]
+                    st.session_state.games = [blob] + others
+                    st.session_state.manual_ids = (
+                        set(st.session_state.manual_ids) | {blob["game_id"]}
+                    )
+                    st.session_state.selected_game_id = blob["game_id"]
+                    st.session_state.games_error = None
+                    st.session_state.games_loaded = True
+                    st.rerun()
+
+        if st.session_state.manual_error:
+            st.warning(st.session_state.manual_error, icon="⚠️")
+        if st.session_state.tracking:
+            st.caption("Stop tracking to add a different game.")
+
+
 def render_setup_sidebar() -> GameInfo | None:
     sb = st.sidebar
     sb.markdown('<div class="sect">Track Game Flow</div>', unsafe_allow_html=True)
@@ -1575,32 +1700,41 @@ def render_setup_sidebar() -> GameInfo | None:
         day = None if day_choice == date.today() else day_choice.strftime("%Y%m%d")
         st.session_state.scoreboard_day = day
         try:
-            games = list_games(day)
-            st.session_state.games = [asdict(g) for g in games]
-            st.session_state.games_error = None if games else "No games found for that date."
+            fresh = [asdict(g) for g in list_games(day)]
+            # Keep any hand-added game that this slate does not already contain,
+            # so loading a slate never silently drops a manually tracked game.
+            slate_ids = {g["game_id"] for g in fresh}
+            kept = [
+                g for g in st.session_state.games
+                if g["game_id"] in st.session_state.manual_ids and g["game_id"] not in slate_ids
+            ]
+            st.session_state.games = kept + fresh
+            st.session_state.games_error = (
+                None if (fresh or kept) else "No games found for that date."
+            )
         except DataSourceError as exc:
-            st.session_state.games = []
+            st.session_state.games = [
+                g for g in st.session_state.games if g["game_id"] in st.session_state.manual_ids
+            ]
             st.session_state.games_error = str(exc)
         st.session_state.games_loaded = True
+
+    render_manual_id_entry(sb)
 
     if st.session_state.games_error:
         sb.warning(st.session_state.games_error, icon="⚠️")
     if not st.session_state.games:
         if not st.session_state.games_loaded:
-            sb.caption("Click **Load Live Games** to begin.")
+            sb.caption("Click **Load Live Games** to begin, or add a game by ID.")
         return None
 
-    games = [
-        GameInfo(
-            game_id=g["game_id"], start_iso=g["start_iso"], state=g["state"],
-            status_detail=g["status_detail"], period=g["period"],
-            display_clock=g["display_clock"], away=TeamInfo(**g["away"]),
-            home=TeamInfo(**g["home"]), away_score=g["away_score"], home_score=g["home_score"],
-        )
-        for g in st.session_state.games
-    ]
+    games = [_game_from_dict(g) for g in st.session_state.games]
     ids = [g.game_id for g in games]
     by_id = {g.game_id: g for g in games}
+
+    def option_label(gid: str) -> str:
+        suffix = "  (added by ID)" if gid in st.session_state.manual_ids else ""
+        return game_option_label(by_id[gid]) + suffix
 
     # No explicit widget key here: `options` changes whenever a different slate
     # is loaded, and an auto-keyed widget re-derives from `index` instead of
@@ -1608,8 +1742,7 @@ def render_setup_sidebar() -> GameInfo | None:
     selected = st.session_state.selected_game_id
     index = ids.index(selected) if selected in ids else 0
     chosen_id = sb.selectbox(
-        "Game", options=ids, index=index,
-        format_func=lambda gid: game_option_label(by_id[gid]),
+        "Game", options=ids, index=index, format_func=option_label,
         disabled=st.session_state.tracking,
     )
     if chosen_id != st.session_state.selected_game_id:
@@ -2022,7 +2155,17 @@ def build_tracked_game(game: GameInfo) -> TrackedGame:
 
 
 def refresh_live_status(game: GameInfo) -> GameInfo:
-    """Re-read the scoreboard (cached, 20s) so status/score stay current."""
+    """Keep status/score current for the tracked game.
+
+    A game added by ID may not be on the selected slate at all, so it reads its
+    status from the summary header instead of the scoreboard. Both calls are
+    cached at 20s, so either way this is one request per 20s, not per rerun.
+    """
+    if game.game_id in st.session_state.manual_ids:
+        try:
+            return game_from_id(game.game_id)
+        except DataSourceError:
+            return game
     try:
         for g in list_games(st.session_state.scoreboard_day):
             if g.game_id == game.game_id:
@@ -2051,9 +2194,9 @@ def main() -> None:
             with tab:
                 render_banner()
                 note(
-                    "Use the sidebar: Load Live Games → select a game → set two key "
-                    "players per team → Track Game. No feed requests are made for "
-                    "play-by-play until tracking starts."
+                    "Use the sidebar: Load Live Games (or Add game by ID) → select a "
+                    "game → set two key players per team → Track Game. No feed requests "
+                    "are made for play-by-play until tracking starts."
                 )
         return
 

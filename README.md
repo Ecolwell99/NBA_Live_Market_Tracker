@@ -32,7 +32,7 @@ streamlit run app.py
 ### Flow
 
 1. **Load Live Games** (sidebar) — pulls today's slate. Change **Slate date** for
-   another day.
+   another day. Or use **Add game by ID** (below) to skip the scoreboard entirely.
 2. **Select a game** — live games sort first, then upcoming, then finals.
 3. Both rosters load automatically.
 4. Pick **two key players per team** from the roster dropdowns.
@@ -41,6 +41,33 @@ streamlit run app.py
 No play-by-play request is made until you press **Track Game**. Once tracking, the
 app auto-refreshes every 4s (15s if the game has not tipped off, and not at all
 once the game is final). **Refresh now** in the sidebar forces a fetch.
+
+### Add game by ID
+
+The sidebar's **Add game by ID** expander takes a bare ESPN event id
+(`401810433`) or a pasted ESPN game URL — the id is extracted from the URL, so
+you can copy straight out of the address bar. Use it when:
+
+- the game is not on the slate you loaded,
+- the scoreboard has already dropped the game,
+- or the scoreboard endpoint itself is failing. The summary endpoint is keyed
+  only on the event id, so it still works when `/scoreboard` does not.
+
+The added game is merged into the same list the **Game** dropdown reads and is
+labelled `(added by ID)`, so from that point it behaves identically to a game
+picked off the slate — rosters auto-load, key players, tracking, corrections, all
+the same. Loading a slate afterwards does not drop it.
+
+A bad id gives a plain warning in the sidebar, not a traceback. Two details worth
+knowing:
+
+- Identity/status for a hand-added game come from the summary endpoint's `header`
+  block, which — unlike the scoreboard — carries **no `period` and no
+  `displayClock`**. Nothing depends on them: every market derives the period and
+  clock from the play-by-play itself.
+- While tracking a hand-added game, status refreshes read the summary header
+  rather than the scoreboard. Both are cached at 20s, so the request rate is
+  unchanged.
 
 **Edit Key Players** sits inside the Live tab. It writes to the same canonical
 slot as the sidebar control, so changing key players mid-game does not reset the
