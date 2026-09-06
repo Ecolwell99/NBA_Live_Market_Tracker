@@ -808,7 +808,20 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
             )
         )
 
-    events.sort(key=lambda e: e.sequence)
+    # Deliberately NOT sorted by `sequence`. ESPN's `sequenceNumber` is not monotonic
+    # with game time: in game 401812485 the plays at 2:51 / 2:31 / 1:56 of Q4 carry
+    # sequence 778 / 782 / 787 while the plays from 1:38 down to 0.3 carry 723-772,
+    # so sorting by it drags mid-quarter plays past the end of the game. Measured over
+    # 6 games / ~2900 plays: the payload's own array order had 0 chronology
+    # violations in every game, while sequence order had 1-5 in five of six and moved
+    # 19-70 plays. The feed is already chronological, so preserve it.
+    #
+    # This is what made the "most recent field goal attempts" feed show a missed 3 at
+    # 1:56 Q4 as Miami's last shot instead of the made 3 at 39.7. It also silently
+    # affected every order-dependent market - first basket, first 3, latest made FG.
+    #
+    # `sequence` is still kept on the event: the correction engine uses it to spot a
+    # retroactive insertion, which does not require it to be ordered.
     return events
 
 
