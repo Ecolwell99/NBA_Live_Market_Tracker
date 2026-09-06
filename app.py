@@ -2099,29 +2099,7 @@ def render_live_tab(tg: TrackedGame) -> None:
             unsafe_allow_html=True,
         )
 
-    # --- 1. three most recent FG attempts per team + made-shots feed -------
-    sect(f"{RECENT_FG_COUNT} Most Recent Field Goal Attempts")
-    c_away, c_made, c_home = st.columns(3, gap="medium")
-    with c_away:
-        subsect(away.display_name)
-        render_feed(
-            recent_fg_attempts(tg.events, away.team_id, RECENT_FG_COUNT),
-            away.abbr, home.abbr, tg.abbr_for, True, "No field goal attempts yet.",
-        )
-    with c_made:
-        subsect("Made Shots")
-        render_feed(
-            recent_fg_attempts(tg.events, None, RECENT_FG_COUNT, made_only=True),
-            away.abbr, home.abbr, tg.abbr_for, True, "No made field goals yet.",
-        )
-    with c_home:
-        subsect(home.display_name)
-        render_feed(
-            recent_fg_attempts(tg.events, home.team_id, RECENT_FG_COUNT),
-            away.abbr, home.abbr, tg.abbr_for, True, "No field goal attempts yet.",
-        )
-
-    # --- 2. key player tracker -------------------------------------------
+    # --- 1. key player tracker -------------------------------------------
     sect("Key Player Tracker")
     with st.expander("Edit Key Players (injuries / lineup changes)"):
         st.caption(
@@ -2155,6 +2133,28 @@ def render_live_tab(tg: TrackedGame) -> None:
                     f'<div class="{cls}"><div class="nm">{html.escape(display)}</div>{body}</div>',
                     unsafe_allow_html=True,
                 )
+
+    # --- 2. three most recent FG attempts per team + made-shots feed -------
+    sect(f"{RECENT_FG_COUNT} Most Recent Field Goal Attempts")
+    c_away, c_made, c_home = st.columns(3, gap="medium")
+    with c_away:
+        subsect(away.display_name)
+        render_feed(
+            recent_fg_attempts(tg.events, away.team_id, RECENT_FG_COUNT),
+            away.abbr, home.abbr, tg.abbr_for, True, "No field goal attempts yet.",
+        )
+    with c_made:
+        subsect("Made Shots")
+        render_feed(
+            recent_fg_attempts(tg.events, None, RECENT_FG_COUNT, made_only=True),
+            away.abbr, home.abbr, tg.abbr_for, True, "No made field goals yet.",
+        )
+    with c_home:
+        subsect(home.display_name)
+        render_feed(
+            recent_fg_attempts(tg.events, home.team_id, RECENT_FG_COUNT),
+            away.abbr, home.abbr, tg.abbr_for, True, "No field goal attempts yet.",
+        )
 
     # --- 3. timeframe table ----------------------------------------------
     sect("Timeframe Both Teams To Score")
