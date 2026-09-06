@@ -553,6 +553,15 @@ TRACKED_KINDS = (KIND_FG, KIND_FT, KIND_TURNOVER)
 
 # Word-boundary match so player names like "Ryan Dunn" never read as a dunk.
 _DUNK_RE = re.compile(r"\bdunk", re.IGNORECASE)
+
+# Shot distance is the last resort for telling a 2 from a 3, needed only where
+# `pointsAttempted` is absent and the text does not say "three point" - an older
+# payload renders a missed three as just "misses 27-foot step back jumpshot".
+# The NBA arc is 23.75ft (22ft in the corners), so 23 is the lowest threshold that
+# does not start swallowing long twos. Measured over 27 games / 54 official team
+# box-score lines: 23ft and 24ft each left 1 mismatch, 22ft made it worse at 5.
+_SHOT_FEET_RE = re.compile(r"(\d+)-foot")
+_THREE_POINT_FEET = 23
 _ISO_CLOCK_RE = re.compile(r"^PT(?:(\d+)M)?(?:([\d.]+)S)?$", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
 
@@ -657,34 +666,54 @@ def _shooter_name_from_text(text: str) -> str:
     return ""
 
 
-def _classify_play(short_desc: str, type_text: str, shooting: bool, pts_attempted: int,
-                   scoring: bool) -> tuple[str, int]:
+def _classify_play(short_desc: str, type_text: str, description: str, shooting: bool,
+                   pts_attempted: int, scoring: bool) -> tuple[str, int]:
     """(kind, points) for one play.
 
     Primary signals, in order of reliability:
       pointsAttempted  2/3 -> field goal, 1 -> free throw
       shortDescription "+2 Points" / "Missed 3PT" / "Turnover"
       type.text        contains "Turnover" / "Free Throw"
+
+    `shootingPlay` is the last authority, and it applies to makes and misses
+    alike: a shooting play that is not a free throw is a field-goal attempt
+    whether or not it scored. Older payloads need this - see the branch comment.
     """
     sd = short_desc.lower()
     tt = type_text.lower()
+    desc = description.lower()
+    # "three point" comes from the full play text and is the only 3PT signal that
+    # survives in older payloads: a missed three there reads shortDescription
+    # "Jump Shot" with pointsAttempted 0, and text "misses 26-foot three point
+    # jumper". Without it those attempts are counted as 2PT and the 3PT lines go
+    # badly wrong (measured 12-16 against an official 12-35).
+    is_three = "3pt" in sd or "+3 points" in sd or "three point" in desc
+    if not is_three:
+        feet = _SHOT_FEET_RE.search(desc)
+        is_three = bool(feet and int(feet.group(1)) >= _THREE_POINT_FEET)
+    is_ft = "free throw" in tt or sd in ("+1 point", "missed ft")
 
-    if shooting and pts_attempted in (2, 3):
-        return KIND_FG, pts_attempted
-    if shooting and pts_attempted == 1:
-        return KIND_FT, 1
+    if shooting:
+        if pts_attempted in (2, 3):
+            return KIND_FG, pts_attempted
+        if pts_attempted == 1 or is_ft:
+            return KIND_FT, 1
+        # pointsAttempted absent or zero. Pre-2015-ish payloads put the shot TYPE
+        # in shortDescription ("Jump Shot", "Hook Shot"), so no text branch below
+        # fires either. This branch used to be `if shooting and scoring`, which
+        # rescued made shots but silently dropped missed ones: that lost 33 of the
+        # 2012 finals game's 164 field-goal attempts, and every dropped play was a
+        # miss. Never gate this on `scoring`.
+        return KIND_FG, (3 if is_three else 2)
 
-    # pointsAttempted missing or zero: fall back to the text signals.
-    if "3pt" in sd or "+3 points" in sd:
+    if is_three:
         return KIND_FG, 3
     if sd in ("missed fg", "+2 points"):
         return KIND_FG, 2
-    if "free throw" in tt or sd in ("+1 point", "missed ft"):
+    if is_ft:
         return KIND_FT, 1
     if "turnover" in sd or "turnover" in tt:
         return KIND_TURNOVER, 0
-    if shooting and scoring:
-        return KIND_FG, 2
     return KIND_OTHER, 0
 
 
@@ -725,7 +754,9 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
         except (TypeError, ValueError):
             score_value = 0
 
-        kind, points = _classify_play(short_desc, type_text, shooting, pts_attempted, scoring)
+        kind, points = _classify_play(
+            short_desc, type_text, description, shooting, pts_attempted, scoring
+        )
 
         # participants[0] is the shooter, including on blocked shots where the
         # description leads with the blocker's name.
