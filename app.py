@@ -48,7 +48,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-import pandas as pd
 import requests
 import streamlit as st
 
@@ -109,98 +108,114 @@ RETROACTIVE_TOLERANCE_SECONDS = 45
 HTTP_TIMEOUT = 12
 DASH = "-"
 
+# Cooldown after an HTTP 429: skip this many refresh ticks before polling again,
+# as the NHL / NFL / MLB tools all do. Without it the autorefresh keeps hammering
+# a feed that has already told us to back off.
+RATE_LIMIT_SKIP_TICKS = 2
+
 # On-disk state so a hard browser refresh (new Streamlit session) does not
 # forget an already-detected correction. Best-effort only.
 STATE_DIR = Path(__file__).resolve().parent / ".tracker_state"
 
 
 # ===========================================================================
-# SECTION 2 - STYLING
-# Dark, compact, no decoration. Strong colour is reserved for the two alert
-# types (stat correction, key-player basket).
+# SECTION 2 - STYLING + TAB IDENTIFIERS
+#
+# The house style, ported from the NFL / NHL tools: a near-empty stylesheet,
+# with everything else drawn from the active Streamlit theme
+# (var(--text-color), var(--secondary-background-color)) instead of a private
+# palette. Hardcoding a palette here is exactly what made this tool look
+# unrelated to the others. Strong colour is reserved for the status banner and
+# the Yes/No pills, both of which live in the shared components in SECTION 8.
 # ===========================================================================
+
+# Tab identifiers. Defined this early because DEFAULT_STATE (SECTION 7) seeds
+# `active_tab` with one of them. They are opaque keys, never labels - see
+# `render_tab_strip` for why that distinction matters.
+TAB_PREMATCH = "prematch"
+TAB_LIVE = "live"
+TAB_CORRECTIONS = "corrections"
+TABS = (TAB_PREMATCH, TAB_LIVE, TAB_CORRECTIONS)
 
 CSS = """
 <style>
-div.block-container { padding-top: 1.1rem; padding-bottom: 1.5rem; max-width: 1560px; }
-#MainMenu, footer, header [data-testid="stStatusWidget"] { visibility: hidden; }
+/* Tighten default Streamlit padding */
+.block-container { padding-top: 1rem; padding-bottom: 1rem; }
+/* Remove red underline from metric delta */
+[data-testid="stMetricDelta"] svg { display: none; }
 
-/* --- section label: small caps rule instead of a big header --- */
+/* --- section labels: a small-caps rule instead of a big header --- */
 .sect {
-  font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
-  color: #7f8ba0; font-weight: 700; margin: 16px 0 6px 0;
-  border-bottom: 1px solid #232a38; padding-bottom: 3px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  font-weight: 700; color: var(--text-color); opacity: .6;
+  margin: 16px 0 6px 0; padding-bottom: 3px;
+  border-bottom: 1px solid var(--secondary-background-color);
 }
 .sect:first-child { margin-top: 4px; }
 .subsect {
-  font-size: 11.5px; font-weight: 700; color: #c3cad8; letter-spacing: .02em;
-  margin: 10px 0 4px 0;
+  font-size: 12px; font-weight: 700; color: var(--text-color); margin: 10px 0 4px 0;
 }
-.note { font-size: 10.5px; color: #6c7688; margin: 3px 0 0 0; }
+.note { font-size: 11px; color: var(--text-color); opacity: .55; margin: 3px 0 0 0; }
 
-/* --- status banner --- */
-.banner {
-  font-size: 12px; font-weight: 600; letter-spacing: .02em;
-  padding: 6px 10px; border-radius: 3px; margin-bottom: 10px;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+/* --- scoreboard line --- */
+.scoreline {
+  font-size: 22px; font-weight: 900; color: var(--text-color); letter-spacing: .02em;
 }
-.banner-ok   { background: #111722; border: 1px solid #26303f; color: #7f8ba0; }
-.banner-warn { background: #2b2410; border: 1px solid #6f5a1c; color: #f0dda6; }
-.banner-corr { background: #3a1216; border: 1px solid #a02a35; color: #ffd6da; }
+.scoreline .st { font-size: 14px; font-weight: 700; opacity: .6; margin-left: 10px; }
 
-/* --- alerts --- */
+/* --- alerts (key-player flash) --- */
 .alert {
-  font-size: 12px; padding: 6px 10px; border-radius: 3px; margin-bottom: 4px;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 14px; font-weight: 700; padding: 10px 14px; border-radius: 8px;
+  margin-bottom: 6px;
+  background-color: #3a1600; color: #ffd966; border: 2px solid #ff9900;
 }
-.alert-kp   { background: #33280d; border: 1px solid #8a6b1c; color: #ffeec2; }
-.alert-corr { background: #3a1216; border: 1px solid #a02a35; color: #ffd6da; }
-
-/* --- compact tables --- */
-table.nbat { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-bottom: 2px; }
-table.nbat th {
-  text-align: left; font-weight: 600; color: #8b94a7; text-transform: uppercase;
-  letter-spacing: .05em; font-size: 10px; padding: 5px 8px;
-  border-bottom: 1px solid #2c3444; white-space: nowrap;
-}
-table.nbat td {
-  padding: 5px 8px; border-bottom: 1px solid #1b212d; color: #dfe3ec;
-  white-space: nowrap; vertical-align: top;
-}
-table.nbat tr:last-child td { border-bottom: none; }
-table.nbat td.k { color: #98a2b6; font-weight: 600; }
-table.nbat tr.grp td { background: #151a24; font-weight: 600; color: #e8ecf4; }
-table.nbat td.dim { color: #5d6675; }
-.yes { color: #6fae7f; font-weight: 600; }
-.no  { color: #c07a80; font-weight: 600; }
 
 /* --- event feed rows --- */
 .feed { margin-bottom: 2px; }
 .frow {
-  font-size: 12px; padding: 4px 8px; margin-bottom: 3px; background: #12161f;
-  border-left: 2px solid #2a3040; color: #dfe3ec;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 13px; padding: 5px 10px; margin-bottom: 3px;
+  background: rgba(128,128,128,0.06); border-left: 3px solid transparent;
+  color: var(--text-color);
 }
-.frow.made { border-left-color: #3f7d52; }
-.frow.miss { border-left-color: #6b3a3a; }
-.frow .sc { color: #79839a; }
-.frow.empty { color: #5d6675; border-left-color: #232a38; }
+.frow.made { border-left-color: #00cc44; }
+.frow.miss { border-left-color: #cc2200; }
+.frow .sc { opacity: .6; }
+.frow.empty { opacity: .5; }
 
 /* --- key player card --- */
-.kp { background: #12161f; border: 1px solid #232a38; border-radius: 3px;
-      padding: 7px 9px; margin-bottom: 6px; }
-.kp .nm { font-size: 12.5px; font-weight: 700; color: #e8ecf4; }
-.kp .ln { font-size: 12px; color: #b9c1d1; margin-top: 2px;
-          font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-.kp .ln.none { color: #5d6675; }
-.kp.hot { border-color: #8a6b1c; background: #1d1a10; }
+.kp {
+  background: rgba(128,128,128,0.06); border: 2px solid transparent;
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 6px;
+}
+.kp .nm { font-size: 13px; font-weight: 700; color: var(--text-color); }
+.kp .ln { font-size: 13px; color: var(--text-color); opacity: .85; margin-top: 2px; }
+.kp .ln.none { opacity: .45; }
+.kp.hot { border-color: #ff9900; background: rgba(255,153,0,0.12); }
 
-/* correction before/after colouring, as in the mock-up sheet */
-.was { color: #d9848c; }
-.now { color: #7fb98d; }
-.arr { color: #7f8ba0; }
-
-div[data-testid="stVerticalBlock"] { gap: 0.35rem; }
+/* --- tab strip -----------------------------------------------------------
+   Cosmetic only - makes the keyed radio in `render_tab_strip` read as a tab
+   strip. Scoped to that widget via the .st-key-active_tab wrapper class
+   Streamlit adds for any keyed widget, so it cannot leak onto the sidebar. If
+   Streamlit changes these internal selectors nothing breaks: it degrades to a
+   plain horizontal radio, which still navigates correctly. */
+.st-key-active_tab div[role="radiogroup"] { gap: 4px; }
+.st-key-active_tab div[role="radiogroup"] > label {
+  padding: 6px 16px; border-radius: 8px 8px 0 0;
+  font-weight: 700; font-size: 15px; border-bottom: 2px solid transparent;
+}
+.st-key-active_tab div[role="radiogroup"] > label:hover {
+  background: var(--secondary-background-color);
+}
+.st-key-active_tab div[role="radiogroup"] > label:has(input:checked) {
+  background: var(--secondary-background-color);
+  border-bottom: 2px solid #ff4b4b;
+}
+/* Hide the radio dot so it reads as a tab, not a form control. The :has(input)
+   guard matters: without it, a future Streamlit DOM change could match the div
+   holding the tab TEXT and hide the labels entirely. */
+.st-key-active_tab div[role="radiogroup"] > label > div:first-child:has(input) {
+  display: none;
+}
 </style>
 """
 
@@ -1298,11 +1313,13 @@ DEFAULT_STATE: dict[str, Any] = {
     "games": [],
     "games_error": None,
     "games_loaded": False,
-    "manual_ids": set(),      # game ids added by hand, not from the scoreboard
-    "manual_error": None,
+    "manual_ids": set(),      # game ids loaded by hand, not from the scoreboard
     "scoreboard_day": None,
     "selected_game_id": None,
+    "selected_game_label": None,
     "tracking": False,
+    "active_tab": TAB_PREMATCH,
+    "rate_limit_skip_remaining": 0,
     "key_players": {"away": [], "home": []},
     "kp_active": set(),
     "kp_seen": {},
@@ -1391,12 +1408,26 @@ def load_state(game_id: str) -> bool:
     return True
 
 
-def clear_state(game_id: str) -> None:
+def reset_game_state() -> None:
+    """Drop everything derived from one specific game, keeping the sidecar file.
+
+    Mirrors `reset_game_state` in the NFL tool, and is called on every change of
+    selected game. Without it the previous game's snapshot survives into the
+    next one, and the first poll diffs game B against game A: none of A's event
+    ids exist in B, so every play in B reads as a retroactive insertion and the
+    correction log fills with fiction.
+    """
     for key in CLEARED_KEYS:
         st.session_state[key] = deepcopy(DEFAULT_STATE[key])
     st.session_state.kp_alerts = []
     st.session_state.kp_active = set()
     st.session_state.banner_dismissed_key = None
+
+
+def clear_state(game_id: str) -> None:
+    """Explicit "Reset tracked state": also deletes the on-disk sidecar, so the
+    log does not come back on the next Track Game."""
+    reset_game_state()
     try:
         _state_path(game_id).unlink(missing_ok=True)
     except Exception:
@@ -1434,34 +1465,73 @@ def note(text: str) -> None:
     st.markdown(f'<div class="note">{html.escape(text)}</div>', unsafe_allow_html=True)
 
 
-def html_table(headers: Sequence[str], rows: Sequence[Sequence[Any]],
-               first_col_key: bool = True, group_rows: Sequence[int] = ()) -> None:
-    """Compact static table. Static HTML means no internal scrollbars, ever."""
-    head = "".join(f"<th>{html.escape(str(h))}</th>" for h in headers)
+_TH_STYLE = (
+    "padding:6px 14px; text-align:left; border-bottom:2px solid "
+    "var(--secondary-background-color); font-size:12px; color:var(--text-color); "
+    "font-weight:700; white-space:nowrap; text-transform:uppercase; "
+    "letter-spacing:0.04em;"
+)
+
+
+def _pill(text: str, bg: str, fg: str) -> str:
+    return (
+        f'<span style="background-color:{bg}; color:{fg}; padding:2px 10px; '
+        f'border-radius:12px; font-weight:700; font-size:12px; '
+        f'white-space:nowrap;">{html.escape(text)}</span>'
+    )
+
+
+def _render_cell(value: str) -> str:
+    """Yes / No as the house pills, so a resulted market reads the same here as
+    it does in the NFL and NHL tools. Everything else is plain escaped text."""
+    if value == "Yes":
+        return _pill("Yes", "#00cc44", "#000000")
+    if value == "No":
+        return _pill("No", "#cc2200", "#ffffff")
+    if value == DASH:
+        return f'<span style="opacity:0.45;">{html.escape(value)}</span>'
+    return html.escape(value)
+
+
+def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None) -> None:
+    """House HTML table, ported from `nfl_qc_tool/components/tables.py`.
+
+    Takes a list of dicts and derives the headers from the first row - the same
+    signature as the NFL / NHL renderer, so a table defined here is laid out and
+    coloured identically to one defined there. Colours come from the Streamlit
+    theme rather than a private palette, which is what makes it match. Static
+    HTML means no internal scrollbars, ever.
+
+    wrap_columns: columns allowed to wrap onto several lines. Cells default to
+    nowrap so short values never break mid-value, but a long impact description
+    would otherwise force horizontal scrolling.
+    """
+    if not rows:
+        st.info("No data.")
+        return
+    wrap_columns = wrap_columns or set()
+    headers = list(rows[0].keys())
+    head = "".join(f'<th style="{_TH_STYLE}">{html.escape(str(h))}</th>' for h in headers)
     body = []
     for i, row in enumerate(rows):
-        cls = ' class="grp"' if i in group_rows else ""
+        bg = "rgba(128,128,128,0.04)" if i % 2 == 0 else "rgba(128,128,128,0.10)"
         cells = []
-        for j, cell in enumerate(row):
-            text = str(cell)
-            css = []
-            if first_col_key and j == 0:
-                css.append("k")
-            if text == DASH:
-                css.append("dim")
-            attr = f' class="{" ".join(css)}"' if css else ""
-            # Yes/No get their own muted colouring.
-            if text == "Yes":
-                inner = '<span class="yes">Yes</span>'
-            elif text == "No":
-                inner = '<span class="no">No</span>'
+        for h in headers:
+            if h in wrap_columns:
+                sizing = ("white-space:normal; overflow-wrap:break-word; "
+                          "width:100%; min-width:200px; line-height:1.5;")
             else:
-                inner = html.escape(text)
-            cells.append(f"<td{attr}>{inner}</td>")
-        body.append(f"<tr{cls}>{''.join(cells)}</tr>")
+                sizing = "white-space:nowrap;"
+            cells.append(
+                f'<td style="padding:5px 14px; font-size:13px; {sizing} '
+                f'vertical-align:top; color:var(--text-color); font-weight:500;">'
+                f'{_render_cell(str(row.get(h, "")))}</td>'
+            )
+        body.append(f'<tr style="background-color:{bg};">{"".join(cells)}</tr>')
     st.markdown(
-        f'<table class="nbat"><thead><tr>{head}</tr></thead>'
-        f'<tbody>{"".join(body)}</tbody></table>',
+        '<div style="overflow-x:auto; width:100%;">'
+        '<table style="width:100%; border-collapse:collapse;">'
+        f'<thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',
         unsafe_allow_html=True,
     )
 
@@ -1515,49 +1585,104 @@ def active_correction_alert() -> dict | None:
     return None
 
 
-def render_banner() -> None:
-    """Compact status banner. Rendered identically at the top of every tab."""
-    alert = active_correction_alert()
-    if alert:
-        text = (
-            f"STAT CORRECTION DETECTED — {period_label(alert['period'])} {alert['clock']} "
-            f"| {alert['original']} → {alert['updated']} | {alert['impact']} "
-            f"| detected {alert['detected_display']}"
-        )
-        st.markdown(f'<div class="banner banner-corr">{html.escape(text)}</div>',
-                    unsafe_allow_html=True)
-        return
+_WARNING_STYLES = {
+    "alert": "background-color:#3a1600; color:#ffd966; border:2px solid #ff9900",
+    "ok":    "background-color:#132117; color:#66ff99; border:2px solid #2e6b45",
+    "info":  "background-color:#0d1f3c; color:#66aaff; border:2px solid #2255aa",
+}
 
-    if st.session_state.last_error:
-        streak = st.session_state.error_streak
-        text = f"STATUS: DATA DELAY — {st.session_state.last_error}"
-        if streak > 1:
-            text += f" ({streak} consecutive)"
-        st.markdown(f'<div class="banner banner-warn">{html.escape(text)}</div>',
-                    unsafe_allow_html=True)
-        return
 
-    if st.session_state.feed_warning:
-        st.markdown(
-            f'<div class="banner banner-warn">'
-            f'{html.escape("STATUS: FEED WARNING - " + st.session_state.feed_warning)}</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    logged = len(st.session_state.corrections)
-    impacting = sum(1 for r in st.session_state.corrections if r.get("market_impacting"))
-    suffix = ""
-    if logged:
-        suffix = f"  ·  {logged} correction(s) logged, {impacting} market impacting"
+def warning_box(message: str, warning_type: str = "ok") -> None:
+    """The house status banner, ported from `nfl_qc_tool/components/warning_box.py`
+    (itself a direct port of the NHL tool's). `message` is injected as HTML, as it
+    is there, so callers escape any feed-derived text themselves."""
+    style = _WARNING_STYLES.get(warning_type, _WARNING_STYLES["ok"])
     st.markdown(
-        f'<div class="banner banner-ok">{html.escape("STATUS: OK" + suffix)}</div>',
+        f'<div style="margin-top:10px; margin-bottom:18px; padding:16px; border-radius:10px;'
+        f' font-size:22px; font-weight:700; {style}">{message}</div>',
         unsafe_allow_html=True,
     )
 
 
-def dataframe_kwargs() -> dict:
-    """`use_container_width` was renamed to `width="stretch"` in Streamlit 1.49."""
+def banner_state() -> tuple[str, str]:
+    """(escaped message, house warning type) for the status banner.
+
+    Precedence is unchanged - a live stat correction outranks a feed error, which
+    outranks a feed warning - but every non-ok state maps onto the house "alert"
+    key, so this banner is indistinguishable from the NFL tool's.
+    """
+    alert = active_correction_alert()
+    if alert:
+        detail = (
+            f"{period_label(alert['period'])} {alert['clock']} | "
+            f"{alert['original']} → {alert['updated']} | {alert['impact']} | "
+            f"detected {alert['detected_display']}"
+        )
+        return f"⚠ STAT CORRECTION — {html.escape(detail)}", "alert"
+
+    if st.session_state.last_error:
+        text = f"DATA DELAY — {st.session_state.last_error}"
+        if st.session_state.error_streak > 1:
+            text += f" ({st.session_state.error_streak} consecutive)"
+        return f"⚠ {html.escape(text)}", "alert"
+
+    if st.session_state.feed_warning:
+        return f"⚠ FEED WARNING — {html.escape(st.session_state.feed_warning)}", "alert"
+
+    logged = len(st.session_state.corrections)
+    impacting = sum(1 for r in st.session_state.corrections if r.get("market_impacting"))
+    if logged:
+        return (
+            f"STATUS: OK — {logged} correction(s) logged, {impacting} market impacting",
+            "ok",
+        )
+    return "STATUS: OK", "ok"
+
+
+def render_tab_strip() -> str:
+    """The house tab strip: a keyed radio, NOT st.tabs().
+
+    st.tabs keeps the active tab in the frontend only, so the autorefresh rerun
+    every few seconds rebuilds the strip and it defaults back to the first tab -
+    sitting on Stat Corrections kicked you to Prematch within seconds. Worse, the
+    Corrections label carries a live count, and a changed label remounts the whole
+    strip, so the bounce fired exactly when a correction landed. The NFL and MLB
+    tools both hit this and both moved to a keyed radio; this is the same fix.
+
+    The options MUST stay static and the count MUST live only in `format_func`:
+    were the count in the option values, the stored value "Stat Corrections (3)"
+    would cease to exist the moment the count hit 4, and Streamlit raises on a
+    keyed radio whose stored value is not in `options`.
+    """
+    # A session from an older build can hold a value that is no longer an option.
+    if st.session_state.get("active_tab") not in TABS:
+        st.session_state.active_tab = TAB_PREMATCH
+
+    def label(key: str) -> str:
+        if key == TAB_PREMATCH:
+            return "Prematch"
+        if key == TAB_LIVE:
+            return "Live"
+        total = len(st.session_state.corrections)
+        return f"Stat Corrections {'🔴' if total else '✅'} ({total})"
+
+    # No index= here: with a key set, session state is the source of truth for the
+    # selection, which is the whole point.
+    st.radio(
+        "View", options=list(TABS), format_func=label,
+        horizontal=True, key="active_tab", label_visibility="collapsed",
+    )
+    return st.session_state.active_tab
+
+
+def stretch() -> dict:
+    """Full-width widget kwargs.
+
+    The other tools all pass `use_container_width=True`, which is what gives them
+    full-width sidebar buttons. It was deprecated in favour of `width="stretch"`
+    in Streamlit 1.49, so this picks whichever the installed version wants: same
+    result on screen, no deprecation notice.
+    """
     try:
         major, minor = (int(p) for p in st.__version__.split(".")[:2])
     except (ValueError, AttributeError):
@@ -1639,117 +1764,119 @@ def key_player_controls(container, side: str, team: TeamInfo,
 
 
 def render_manual_id_entry(sb) -> None:
-    """Add a game by ESPN game ID, bypassing the scoreboard entirely.
+    """Load a game by ESPN game ID, bypassing the scoreboard.
 
-    The added game is merged into the same `games` list the selectbox reads, so
-    from that point on it behaves exactly like a game picked off the slate.
+    Deliberately the same shape as the NHL / NFL / MLB tools: a plainly visible
+    text input plus a button that selects the id directly. It was previously
+    buried in a collapsed expander, and it made a feed request before the id
+    counted as loaded - so a slow or unhelpful response left nothing selected.
+    Now the id is resolved when it is needed (see `resolve_selected_game`), which
+    puts any feed problem in the status banner alongside every other one.
     """
-    with sb.expander("Add game by ID"):
-        st.caption(
-            "Paste an ESPN game ID or game URL. Use this for a game that is not "
-            "on the selected slate, or when the scoreboard itself is unavailable."
-        )
-        raw_id = st.text_input(
-            "ESPN game ID",
-            key="manual_game_id",
-            placeholder="401810433",
-            label_visibility="collapsed",
-            disabled=st.session_state.tracking,
-        )
-        if st.button("Add Game ID", disabled=st.session_state.tracking):
-            gid = extract_game_id(raw_id)
-            if not gid:
-                st.session_state.manual_error = (
-                    "Enter a numeric ESPN game ID, or paste the full game URL."
-                )
-            else:
-                try:
-                    blob = fetch_game_header(gid)
-                except DataSourceError as exc:
-                    st.session_state.manual_error = str(exc)
-                else:
-                    st.session_state.manual_error = None
-                    # Replace any existing entry for this id, then put it first so
-                    # the selectbox lands on the game just added.
-                    others = [
-                        g for g in st.session_state.games if g["game_id"] != blob["game_id"]
-                    ]
-                    st.session_state.games = [blob] + others
-                    st.session_state.manual_ids = (
-                        set(st.session_state.manual_ids) | {blob["game_id"]}
-                    )
-                    st.session_state.selected_game_id = blob["game_id"]
-                    st.session_state.games_error = None
-                    st.session_state.games_loaded = True
-                    st.rerun()
-
-        if st.session_state.manual_error:
-            st.warning(st.session_state.manual_error, icon="⚠️")
-        if st.session_state.tracking:
-            st.caption("Stop tracking to add a different game.")
+    manual_id = sb.text_input(
+        "Or enter a Game ID manually",
+        placeholder="e.g. 401810433",
+        disabled=st.session_state.tracking,
+    )
+    if sb.button("Load Manual Game ID", disabled=st.session_state.tracking, **stretch()):
+        gid = extract_game_id(manual_id)
+        if not gid:
+            sb.error("Enter a numeric ESPN game ID, or paste the full game URL.")
+        else:
+            if gid != st.session_state.selected_game_id:
+                st.session_state.selected_game_id = gid
+                st.session_state.selected_game_label = f"Manual ({gid})"
+                reset_game_state()
+            st.session_state.manual_ids = set(st.session_state.manual_ids) | {gid}
+            sb.success(f"Game ID {gid} loaded.")
 
 
-def render_setup_sidebar() -> GameInfo | None:
+def resolve_selected_game() -> tuple[GameInfo | None, str | None]:
+    """(GameInfo, error) for whatever id is currently selected.
+
+    A game picked off the slate is already in `games`. A manually loaded id is
+    not, so its identity comes from the summary header - one feed call the house
+    pattern cannot avoid here, because unlike the NHL and MLB providers, ESPN
+    only exposes team ids alongside the game, and every market in this tool is
+    keyed on team id.
+    """
+    gid = st.session_state.selected_game_id
+    if not gid:
+        return None, None
+    for blob in st.session_state.games:
+        if blob["game_id"] == gid:
+            return _game_from_dict(blob), None
+    try:
+        return game_from_id(gid), None
+    except DataSourceError as exc:
+        return None, f"Game ID {gid}: {exc}"
+
+
+def render_setup_sidebar() -> tuple[GameInfo | None, str | None]:
+    """The house sidebar: title, Load Live Games, game selector, manual id,
+    Track Game. Returns (game, error) so `main` can banner a resolution failure.
+    """
     sb = st.sidebar
-    sb.markdown('<div class="sect">Track Game Flow</div>', unsafe_allow_html=True)
+    sb.markdown("## NBA Markets")
 
     day_choice = sb.date_input(
         "Slate date", value=date.today(), format="YYYY-MM-DD", key="slate_date"
     )
-    if sb.button("Load Live Games", type="primary"):
+    if sb.button("Load Live Games", type="primary", **stretch()):
         day = None if day_choice == date.today() else day_choice.strftime("%Y%m%d")
         st.session_state.scoreboard_day = day
         try:
-            fresh = [asdict(g) for g in list_games(day)]
-            # Keep any hand-added game that this slate does not already contain,
-            # so loading a slate never silently drops a manually tracked game.
-            slate_ids = {g["game_id"] for g in fresh}
-            kept = [
-                g for g in st.session_state.games
-                if g["game_id"] in st.session_state.manual_ids and g["game_id"] not in slate_ids
-            ]
-            st.session_state.games = kept + fresh
+            st.session_state.games = [asdict(g) for g in list_games(day)]
             st.session_state.games_error = (
-                None if (fresh or kept) else "No games found for that date."
+                None if st.session_state.games else "No games found for that date."
             )
         except DataSourceError as exc:
-            st.session_state.games = [
-                g for g in st.session_state.games if g["game_id"] in st.session_state.manual_ids
-            ]
+            st.session_state.games = []
             st.session_state.games_error = str(exc)
         st.session_state.games_loaded = True
 
-    render_manual_id_entry(sb)
-
     if st.session_state.games_error:
         sb.warning(st.session_state.games_error, icon="⚠️")
-    if not st.session_state.games:
-        if not st.session_state.games_loaded:
-            sb.caption("Click **Load Live Games** to begin, or add a game by ID.")
-        return None
 
     games = [_game_from_dict(g) for g in st.session_state.games]
     ids = [g.game_id for g in games]
     by_id = {g.game_id: g for g in games}
 
-    def option_label(gid: str) -> str:
-        suffix = "  (added by ID)" if gid in st.session_state.manual_ids else ""
-        return game_option_label(by_id[gid]) + suffix
-
-    # No explicit widget key here: `options` changes whenever a different slate
-    # is loaded, and an auto-keyed widget re-derives from `index` instead of
-    # holding a game id that no longer exists in the list.
+    # index=None plus a placeholder, as in the NFL tool: a manually loaded id is
+    # not on the slate, and the selector must show "no slate game picked" rather
+    # than silently snapping the selection onto the first game of the day.
     selected = st.session_state.selected_game_id
-    index = ids.index(selected) if selected in ids else 0
     chosen_id = sb.selectbox(
-        "Game", options=ids, index=index, format_func=option_label,
+        "Game",
+        options=ids,
+        index=ids.index(selected) if selected in ids else None,
+        format_func=lambda gid: game_option_label(by_id[gid]),
+        placeholder="Load games first",
+        label_visibility="collapsed",
         disabled=st.session_state.tracking,
     )
-    if chosen_id != st.session_state.selected_game_id:
+    if chosen_id and chosen_id != st.session_state.selected_game_id:
         st.session_state.selected_game_id = chosen_id
-    game = by_id[chosen_id]
+        st.session_state.selected_game_label = game_option_label(by_id[chosen_id])
+        st.session_state.manual_ids = set(st.session_state.manual_ids) - {chosen_id}
+        reset_game_state()
 
-    # Rosters load automatically for both teams once a game is selected.
+    sb.divider()
+    render_manual_id_entry(sb)
+    sb.divider()
+
+    game, game_error = resolve_selected_game()
+    if game_error:
+        sb.warning(game_error, icon="⚠️")
+        return None, game_error
+    if game is None:
+        if not st.session_state.games_loaded:
+            sb.caption("Click **Load Live Games** to begin, or load a game by ID.")
+        return None, None
+
+    # Rosters load automatically for both teams once a game is selected. A failure
+    # is reported but never blocking: the play-by-play carries its own player
+    # names, so every market still results without a roster.
     away_roster, home_roster, roster_error = load_rosters(game)
     if roster_error:
         sb.warning(roster_error, icon="⚠️")
@@ -1763,23 +1890,23 @@ def render_setup_sidebar() -> GameInfo | None:
         key_player_controls(sb, "away", game.away, away_roster, "sb")
         key_player_controls(sb, "home", game.home, home_roster, "sb")
 
-        sb.markdown('<div class="sect">Start</div>', unsafe_allow_html=True)
-        if sb.button("Track Game", type="primary", disabled=not (away_roster and home_roster)):
+        sb.divider()
+        if sb.button("▶  Track Game", type="primary", **stretch()):
             st.session_state.tracking = True
             st.session_state.last_error = None
             st.session_state.error_streak = 0
+            st.session_state.rate_limit_skip_remaining = 0
             # Restore an earlier session for this game if one exists, so a
             # browser refresh does not lose the correction log.
             if load_state(game.game_id):
                 sb.caption("Restored previous tracking state for this game.")
             st.rerun()
     else:
-        sb.markdown('<div class="sect">Tracking</div>', unsafe_allow_html=True)
         sb.caption(f"{game.away.display_name} @ {game.home.display_name}")
-        if sb.button("Stop Tracking"):
+        if sb.button("Stop Tracking", **stretch()):
             st.session_state.tracking = False
             st.rerun()
-        if sb.button("Refresh now"):
+        if sb.button("Refresh now", **stretch()):
             fetch_summary.clear()
             fetch_scoreboard.clear()
             st.rerun()
@@ -1793,13 +1920,19 @@ def render_setup_sidebar() -> GameInfo | None:
                 st.rerun()
 
         ok = st.session_state.last_fetch_ok
-        sb.caption(
-            f"Last good fetch: {ok or 'never'}"
-            + (f" · errors: {st.session_state.error_streak}" if st.session_state.error_streak else "")
+        sb.markdown(
+            f'<div style="font-size:12px; opacity:0.6;">Last good fetch: {html.escape(ok or "never")}'
+            + (f" · errors: {st.session_state.error_streak}"
+               if st.session_state.error_streak else "")
+            + "</div>",
+            unsafe_allow_html=True,
         )
-        sb.caption(f"Auto-refresh: {REFRESH_SECONDS}s")
+        sb.markdown(
+            f'<div style="font-size:12px; opacity:0.6;">Interval: {REFRESH_SECONDS}s</div>',
+            unsafe_allow_html=True,
+        )
 
-    return game
+    return game, None
 
 
 def load_rosters(game: GameInfo) -> tuple[list[RosterPlayer], list[RosterPlayer], str | None]:
@@ -1844,20 +1977,24 @@ class TrackedGame:
                 self.game.home.team_id: self.game.home.abbr}
 
 
+def _first_event_rows(events: Sequence[GameEvent], game: GameInfo) -> list[dict]:
+    """Game / away / home rows for the first-event markets.
+
+    Shared by Prematch and Second Half so the two tables cannot drift apart -
+    they previously carried different column headers for the same market.
+    """
+    return [
+        {"Team": "Game First", **first_event_row(events)},
+        {"Team": game.away.display_name, **first_event_row(events, game.away.team_id)},
+        {"Team": game.home.display_name, **first_event_row(events, game.home.team_id)},
+    ]
+
+
 def render_prematch_tab(tg: TrackedGame) -> None:
-    render_banner()
     game = tg.game
 
     sect("Game / Team First Field Goal")
-    rows = [
-        ["Game First", *first_event_row(tg.events).values()],
-        [game.away.display_name, *first_event_row(tg.events, game.away.team_id).values()],
-        [game.home.display_name, *first_event_row(tg.events, game.home.team_id).values()],
-    ]
-    html_table(
-        ["Team", "First FG Exact", "First FG Scorer", "First 3 Make", "First Dunk"],
-        rows, group_rows=(0,),
-    )
+    html_table(_first_event_rows(tg.events, game))
     note(
         "First Dunk resolves on the first MADE dunk. Dunks are classified from the feed's "
         "shot type (e.g. 'Driving Dunk Shot'); see limitations in the README."
@@ -1874,20 +2011,14 @@ def render_prematch_tab(tg: TrackedGame) -> None:
             if not starters:
                 note("Lineup not available yet.")
                 continue
-            table_rows = []
-            for p in starters:
-                r = player_first_shot_row(tg.events, p.player_id)
-                table_rows.append([
-                    p.name, r["First FG Attempt"], r["First FG Type"], r["First 3 Attempt"],
-                ])
-            html_table(
-                ["Player", "First FG Attempt", "First FG Type", "First 3 Attempt"], table_rows
-            )
+            html_table([
+                {"Player": p.name, **player_first_shot_row(tg.events, p.player_id)}
+                for p in starters
+            ])
             note(f"Lineup source: {source}")
 
 
 def render_live_tab(tg: TrackedGame) -> None:
-    render_banner()
     game = tg.game
     away, home = game.away, game.home
 
@@ -1900,7 +2031,7 @@ def render_live_tab(tg: TrackedGame) -> None:
     st.session_state.kp_alerts = fresh
     for alert in reversed(fresh[-4:]):
         st.markdown(
-            f'<div class="alert alert-kp">{html.escape(alert["text"])}</div>',
+            f'<div class="alert">{html.escape(alert["text"])}</div>',
             unsafe_allow_html=True,
         )
 
@@ -1973,14 +2104,7 @@ def render_live_tab(tg: TrackedGame) -> None:
         period = st.selectbox(
             "Quarter", options=periods, format_func=period_label, key="timeframe_period",
         )
-    rows = timeframe_table(
-        tg.events, period, away.team_id, home.team_id, game.is_final
-    )
-    html_table(
-        ["Quarter", "Time", "Yes/No"],
-        [[r["Quarter"], r["Time"], r["Yes/No"]] for r in rows],
-        first_col_key=False,
-    )
+    html_table(timeframe_table(tg.events, period, away.team_id, home.team_id, game.is_final))
     note(
         "Yes = both teams scored inside the exact window (field goals and free throws). "
         "No = window complete with both teams not scoring. - = not reached or in progress."
@@ -1991,21 +2115,10 @@ def render_live_tab(tg: TrackedGame) -> None:
     if tg.max_period < 3:
         note("Activates when the third quarter begins.")
     else:
-        second_half = [e for e in tg.events if e.period >= 3]
-        sh_rows = [
-            ["Game First", *first_event_row(second_half).values()],
-            [away.display_name, *first_event_row(second_half, away.team_id).values()],
-            [home.display_name, *first_event_row(second_half, home.team_id).values()],
-        ]
-        html_table(
-            ["Team", "First FG Exact", "First FG Scorer", "First 3", "First Dunk"],
-            sh_rows, group_rows=(0,),
-        )
+        html_table(_first_event_rows([e for e in tg.events if e.period >= 3], game))
 
 
 def render_corrections_tab() -> None:
-    render_banner()
-
     log = st.session_state.corrections
     impacting = [r for r in log if r.get("market_impacting")]
 
@@ -2029,7 +2142,7 @@ def render_corrections_tab() -> None:
         note("No corrections detected in this tracking session.")
         return
 
-    frame = pd.DataFrame(
+    html_table(
         [
             {
                 "Detected": r["detected_display"],
@@ -2041,12 +2154,8 @@ def render_corrections_tab() -> None:
                 "Impact Type": r["impact"],
             }
             for r in reversed(rows)  # newest first
-        ]
-    )
-    st.dataframe(
-        frame, hide_index=True,
-        height=min(38 * (len(frame) + 1) + 4, 620),
-        **dataframe_kwargs(),
+        ],
+        wrap_columns={"Impact Type"},
     )
     note(
         "Append-only for this tracking session. An event corrected more than once is "
@@ -2071,6 +2180,13 @@ def build_tracked_game(game: GameInfo) -> TrackedGame:
         st.session_state.last_fetch_ok = datetime.now().astimezone().strftime("%H:%M:%S")
         st.session_state.last_error = None
         st.session_state.error_streak = 0
+    except RateLimitedError as exc:
+        # Must precede DataSourceError - RateLimitedError subclasses it, and a 429
+        # needs the cooldown rather than another attempt in four seconds.
+        st.session_state.rate_limit_skip_remaining = RATE_LIMIT_SKIP_TICKS
+        st.session_state.last_error = str(exc)
+        st.session_state.error_streak += 1
+        payload = None
     except DataSourceError as exc:
         # Keep showing the last known good state rather than blanking the tool.
         st.session_state.last_error = str(exc)
@@ -2184,25 +2300,22 @@ def main() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     init_state()
 
-    game = render_setup_sidebar()
+    game, game_error = render_setup_sidebar()
 
     if not st.session_state.tracking or game is None:
-        st.markdown(
-            f'<div class="sect">{html.escape(APP_TITLE)}</div>', unsafe_allow_html=True
+        if game_error:
+            warning_box(f"⚠ {html.escape(game_error)}", "alert")
+        else:
+            warning_box("STATUS: OK — Load a game and click Track Game", "ok")
+        note(
+            "Sidebar: Load Live Games (or enter a Game ID) → select a game → set two "
+            "key players per team → Track Game. No play-by-play requests are made "
+            "until tracking starts."
         )
-        for tab in st.tabs(["Prematch", "Live", "Stat Corrections"]):
-            with tab:
-                render_banner()
-                note(
-                    "Use the sidebar: Load Live Games (or Add game by ID) → select a "
-                    "game → set two key players per team → Track Game. No feed requests "
-                    "are made for play-by-play until tracking starts."
-                )
         return
 
-    game = refresh_live_status(game)
-
-    # Auto-refresh only while a tracked game can still change.
+    # Auto-refresh only while a tracked game can still change. Registered before
+    # the cooldown check below, so a rate-limited page still wakes up to resume.
     if not game.is_final:
         interval = PREGAME_REFRESH_SECONDS if game.state == "pre" else REFRESH_SECONDS
         if st_autorefresh is not None:
@@ -2214,6 +2327,15 @@ def main() -> None:
                 icon="⚠️",
             )
 
+    # Rate-limit cooldown, as in the NHL / NFL / MLB tools: after a 429, sit out a
+    # couple of ticks instead of polling straight back into it.
+    if st.session_state.rate_limit_skip_remaining > 0:
+        st.session_state.rate_limit_skip_remaining -= 1
+        secs_left = st.session_state.rate_limit_skip_remaining * REFRESH_SECONDS
+        warning_box(f"⚠ RATE LIMITED — resuming in ~{secs_left}s", "alert")
+        return
+
+    game = refresh_live_status(game)
     tg = build_tracked_game(game)
 
     header = (
@@ -2225,21 +2347,25 @@ def main() -> None:
         last = tg.events[-1]
         status = f"{period_label(last.period)} {last.clock_display}"
     st.markdown(
-        f'<div class="sect">{html.escape(header)}  ·  {html.escape(status)}</div>',
+        f'<div class="scoreline">{html.escape(header)}'
+        f'<span class="st">{html.escape(status)}</span></div>',
         unsafe_allow_html=True,
     )
+
+    # One banner, above the tab strip, exactly as the other tools place it.
+    warning_box(*banner_state())
 
     if game.state == "pre":
         note("Game has not started. Prematch tables will populate from the first play.")
     elif not tg.events and st.session_state.last_error is None:
         note("Play-by-play is not published for this game yet.")
 
-    prematch_tab, live_tab, corrections_tab = st.tabs(["Prematch", "Live", "Stat Corrections"])
-    with prematch_tab:
+    active = render_tab_strip()
+    if active == TAB_PREMATCH:
         render_prematch_tab(tg)
-    with live_tab:
+    elif active == TAB_LIVE:
         render_live_tab(tg)
-    with corrections_tab:
+    else:
         render_corrections_tab()
 
 
