@@ -228,11 +228,23 @@ CSS = """
 
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 
+# DO NOT put a browser User-Agent here. ESPN sits behind Akamai, which matches the
+# LEADING token of the UA against known HTTP-client signatures and serves 403 to
+# anything else - including a spoofed Chrome string. Measured 2026-09-06, stable
+# over repeated rounds, identical on all four endpoints we call:
+#
+#   python-requests/2.31.0                        200      <- requests' own default
+#   python-requests/2.31.0 nba-live-tracker/1.0   200      <- prefix, then our name
+#   curl/8.7.1  libcurl/8.0  Python-urllib/3.11   200
+#   Mozilla/5.0 ... Chrome/124.0.0.0 ...          403      <- the old value
+#   nba-live-tracker/1.0 python-requests/2.31.0   403      <- prefix must be FIRST
+#   nba-live-tracker/1.0   "requests"   ""        403      <- no version, no match
+#
+# So: keep a real `python-requests/<version>` prefix, then identify ourselves after
+# it. The version is read from the installed library rather than hardcoded, so the
+# string can never claim a version we are not actually running.
 _HTTP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": f"python-requests/{requests.__version__} nba-live-tracker/1.0",
     "Accept": "application/json, text/plain, */*",
 }
 
@@ -305,6 +317,14 @@ def _http_get_json(url: str) -> dict:
         raise RateLimitedError("Rate limited by the feed (HTTP 429). Backing off.")
     if resp.status_code == 404:
         raise DataSourceError("Game not found on the feed (HTTP 404).")
+    if resp.status_code == 403:
+        # Called out separately because the generic message sent us hunting for a bad
+        # game ID when the real cause was the request headers. A 403 here is Akamai
+        # bot filtering and is never about the game.
+        raise DataSourceError(
+            "Feed refused the request (HTTP 403) - bot filtering, not a bad game ID. "
+            "Check the User-Agent in _HTTP_HEADERS."
+        )
     if resp.status_code >= 500:
         raise DataSourceError(f"Feed is unavailable (HTTP {resp.status_code}).")
     if resp.status_code != 200:
