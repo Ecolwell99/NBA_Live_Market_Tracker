@@ -52,6 +52,28 @@ rate-limit cooldown. `STATUS: OK` does not want attention, so it drops to
 `status_line`, a compact line with a green dot. `banner_state()` still decides the
 message and the precedence; only the rendering differs.
 
+### Screen conventions
+
+- **Section headings** (`sect`) are 13px uppercase with a hairline rule and no accent
+  bar. The bar was a coloured object on every heading of a screen already using colour
+  to mean something; the rule alone separates them.
+- **The gap above a heading is unconditional** (`margin-top: 20px`). It used to be
+  overridden by `.sect:first-child { margin-top: 4px }`, intended for the first heading
+  on a tab — but Streamlit wraps each `st.markdown` in its own container, so the div is
+  *always* the only child and the override matched every heading. The visible gap was
+  therefore whatever the preceding block happened to leave behind (6px after a key
+  player card, 5px after a feed row, more after a table), which is why some sections
+  sat tighter than others. Measured after the fix: 22px above all three headings of the
+  Live tab, identical.
+- **No explanatory captions.** Legends and methodology notes ("Yes means both teams
+  scored inside the window", how corrections are fingerprinted, how dunks are
+  classified) are in this README and in comments at the call site, not on screen. The
+  grey `note` helper survives only for *state*: "Lineup not available yet", "Lineup
+  source: boxscore", the lineup-unverified warning, "Activates when the third quarter
+  begins", and the live `Open market: Next Field Goal after 14-5` line, which is data.
+- **Teams are named in full wherever a panel is headed by one** — "San Antonio Spurs",
+  not "SA KP". Abbreviations appear only inside rows that mix teams.
+
 ### Add game by ID
 
 The sidebar's **Add game by ID** expander takes a bare ESPN event id

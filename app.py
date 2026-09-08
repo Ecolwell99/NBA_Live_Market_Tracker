@@ -170,22 +170,24 @@ CSS = """
 [data-testid="stMetricDelta"] svg { display: none; }
 
 /* --- section labels ------------------------------------------------------
-   Full-contrast (no opacity) and 15px, with a left accent bar as well as the
-   rule. The bar is what lets a heading sit in a narrow column next to a button
-   (Key Player Tracker) and still read as a section heading. */
+   Full contrast (no opacity), uppercase, and a hairline rule underneath - that
+   is the whole treatment. No accent bar: it was one more coloured thing to look
+   past on a screen that is read at a glance.
+
+   The top margin is unconditional. It used to be overridden by
+   `.sect:first-child { margin-top: 4px }`, which was meant for the first heading
+   on a tab but matched EVERY heading, because Streamlit wraps each st.markdown in
+   its own container and the div is always the only child. The gap above a heading
+   was therefore whatever the element above happened to leave, which is why some
+   sections sat tight against the block above them and others did not. */
 .sect {
-  font-size: 15px; text-transform: uppercase; letter-spacing: .06em;
+  font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
   font-weight: 800; color: var(--text-color);
-  margin: 20px 0 8px 0; padding: 1px 0 5px 10px;
-  /* The theme's own accent, with the configured value as the fallback for a
-     Streamlit build that does not publish the variable. Not the red used on the
-     active tab: a red bar on every heading reads as a warning. */
-  border-left: 4px solid var(--primary-color, #5b8dd6);
+  margin: 20px 0 8px 0; padding: 0 0 5px 0;
   border-bottom: 1px solid var(--secondary-background-color);
 }
-.sect:first-child { margin-top: 4px; }
 .subsect {
-  font-size: 14px; font-weight: 800; color: var(--text-color);
+  font-size: 13px; font-weight: 800; color: var(--text-color);
   letter-spacing: .01em; margin: 10px 0 5px 0;
 }
 .note { font-size: 11px; color: var(--text-color); opacity: .55; margin: 3px 0 0 0; }
@@ -2666,11 +2668,9 @@ def render_prematch_tab(tg: TrackedGame) -> None:
     game = tg.game
 
     sect("Game / Team First Field Goal")
+    # First Dunk resolves on the first MADE dunk, classified from the feed's shot type
+    # ("Driving Dunk Shot" etc). Limitations are in the README, not on screen.
     html_table(_first_event_rows(tg.events, game))
-    note(
-        "First Dunk resolves on the first MADE dunk. Dunks are classified from the feed's "
-        "shot type (e.g. 'Driving Dunk Shot'); see limitations in the README."
-    )
 
     sect("Player First Shot — Starters")
     left, right = st.columns(2, gap="medium")
@@ -2856,7 +2856,7 @@ def render_live_tab(tg: TrackedGame) -> None:
     k_away, k_home = st.columns(2, gap="medium")
     for col, side, team in ((k_away, "away", away), (k_home, "home", home)):
         with col:
-            subsect(f"{team.abbr} KP")
+            subsect(team.display_name)
             for pid in st.session_state.key_players.get(side) or []:
                 display = name_by_id.get(pid) or _name_of(pid, tg.events) or pid
                 latest = latest_made_fg(tg.events, pid)
@@ -2877,10 +2877,11 @@ def render_live_tab(tg: TrackedGame) -> None:
 
     # --- 2. three most recent FG attempts per team + made-shots feed -------
     sect(f"{RECENT_FG_COUNT} Most Recent Field Goal Attempts")
+    # Live market state, not a description of the section - kept, unlike the
+    # explanatory captions.
     note(
         f"Open market: Next Field Goal after "
-        f"{_anchor_text(open_market_anchor(tg.events))} ({away.abbr}-{home.abbr}). "
-        f"Each row shows the anchor score its attempt was priced under."
+        f"{_anchor_text(open_market_anchor(tg.events))} ({away.abbr}-{home.abbr})"
     )
     c_away, c_made, c_home = st.columns(3, gap="medium")
     with c_away:
@@ -2936,11 +2937,10 @@ def render_live_tab(tg: TrackedGame) -> None:
         timeframe_table(tg.events, period, away.team_id, home.team_id, game.is_final),
         current_label,
     )
-    note(
-        "Yes = both teams scored inside the exact window (field goals and free throws). "
-        "No = window complete with both teams not scoring. - = not reached or in progress. "
-        "The highlighted row is the window in play, or the last one completed."
-    )
+    # Legend, for the record rather than the screen: Yes = both teams scored inside
+    # the exact window (field goals and free throws); No = window complete with both
+    # teams not scoring; - = not reached or in progress. The highlighted row is the
+    # window in play, or the last one completed.
 
     # --- 4. second half ---------------------------------------------------
     sect("Second Half")
@@ -2989,11 +2989,9 @@ def render_corrections_tab() -> None:
         ],
         wrap_columns={"Impact Type"},
     )
-    note(
-        "Append-only for this tracking session. An event corrected more than once is "
-        "logged once per change. Comparison is keyed on the feed's stable event id, with "
-        "a fingerprint of period, clock, team, shooter, result, shot type and description."
-    )
+    # Append-only for this tracking session; an event corrected more than once is logged
+    # once per change. Keyed on the feed's stable event id plus a fingerprint of period,
+    # clock, team, shooter, result, shot type and description. See README 4.7.
 
 
 # ===========================================================================
