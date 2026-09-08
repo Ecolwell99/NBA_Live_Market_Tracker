@@ -181,6 +181,7 @@ before any code was written:
 | Score at the time | `awayScore` / `homeScore` on each play | ✅ |
 | Starters | `boxscore.players[].statistics[].athletes[].starter` | ✅ exactly 5 per team, once the boxscore publishes |
 | Roster | `athletes` (flat list for NBA), `jersey`, `position.abbreviation` | ✅ |
+| Substitutions | `type.id == "584"`, `participants[0]` on / `participants[1]` off | ✅ 480/480 across 9 games; **no on-court field exists** on `summary`, the core-API competition object, `/situation` or the competitor `/roster`, so the five are derived — see 4.6 |
 
 ### Swapping providers later
 
@@ -246,6 +247,21 @@ insertion gets numbered could not be confirmed against live data. So an unseen
 event counts as a correction if **either** its sequence sits at or below the
 watermark, **or** its game clock is more than `RETROACTIVE_TOLERANCE_SECONDS`
 (45s) behind the live edge. Belt and braces, deliberately.
+
+**Substitutions are kept out of this arithmetic entirely**, not just out of the
+fingerprint diff. They were quietly generating false insertions two ways, both
+measured over 9 games / 3,746 plays:
+
+- The first play of every new quarter is a substitution stamped with the **new**
+  period at `12:00`. Computing the live edge over every event therefore jumped a
+  quarter ahead before any shot in that quarter arrived, and a genuine
+  buzzer-beater from the quarter just ended read as a backdated insertion.
+- Substitutions also carry sequence numbers above the newest tracked play (329 vs
+  233 in one game), which tripped the watermark test on the next real plays.
+
+The watermark and the live edge now come from tracked events only. Replaying all
+9 games as polls: **279 false insertions before, 199 after**. The remaining 199
+are *not* substitution-related — see 4.7.
 
 **Market-impacting categories** (the eight from the spec):
 
@@ -340,3 +356,73 @@ re-flash the same correction; it stays visible for `CORRECTION_BANNER_SECONDS`
   draws (first-event, recent attempts, key players, timeframe, second half). The
   Possession Result and Next-FG-Attempt markets resolve from the same
   `GameEvent` primitives in SECTION 5 and are not yet given their own tables.
+
+### 4.6 Players on the floor
+
+At the top of the Live tab: the five on the floor per team, plus the last two
+players substituted off. Not in the spec — added because subs are entered by hand
+in the trading system and this is the glance that tells you what to change.
+
+**It is derived, not reported.** ESPN publishes no on-court field on any endpoint
+reachable from here: the `summary` payload, the core-API competition object,
+`/situation` and the per-competitor `/roster` were all checked, and the only
+lineup information in any of them is the boxscore `starter` flag. The five are
+therefore the starters with every substitution play applied in feed order
+(`type.id` 584, `participants[0]` on, `participants[1]` off).
+
+**How well that holds up**, measured over 9 games / 3,746 plays / 480
+substitutions before it was built:
+
+- every substitution had exactly two participants, and `[0]`/`[1]` matched the
+  description's "X enters the game for Y" in **480/480** cases;
+- both teams held exactly five players at all **7,492** team-checkpoints, with no
+  substitution ever taking off a player the reconstruction did not have on;
+- **2,335 of 2,338** single-actor plays were by a player it had on the floor.
+
+**The three exceptions are the limitation.** All three are same-clock ordering
+ties — the feed lists the substitution just ahead of one last play by the man
+going off (Q4 30.1 of ATL@CLE: "Dean Wade enters the game for Donovan Mitchell",
+then Mitchell's turnover at the same 30.1). For a moment the panel shows a player
+as off who then records a play. It resolves as soon as play moves on. The panel
+shows the entry clock on a freshly substituted player rather than trying to
+reorder the feed.
+
+Other things to know:
+
+- **It inherits 4.1 entirely.** No boxscore starters means no trustworthy five,
+  and the panel prints the lineup source whenever it is not the boxscore flag.
+  Before tip-off it shows the starting five with no substitution clocks.
+- **If a substitution takes off a player the panel did not have on**, the swap is
+  still applied but the team is labelled *Lineup unverified* with a count. That
+  never happened in the measured games; if it appears, check the boxscore.
+- A player is highlighted (orange, as with a key-player alert) for
+  `FLOOR_FRESH_SECONDS = 90` of **game** clock after coming on — game clock, not
+  wall clock, so a quarter break does not expire the highlight on the very subs
+  you came back to the desk to see. `FLOOR_RECENT_SUBS = 2` sets how many
+  substituted-off players are listed.
+- **Unverified against a live feed.** Everything above is measured on completed
+  games. If a live `summary` response returns only a trailing window of plays
+  rather than the whole history, the five would have to be accumulated across
+  polls instead of re-derived. The truncation guard in 4.3 implies full history is
+  normally returned, but that has not been confirmed mid-game.
+
+### 4.7 Remaining false insertions (known, not fixed)
+
+Keeping substitutions out of the sequence and live-edge arithmetic (4.3) removed
+80 of 279 false insertions in the 9-game replay. The other 199 come from two
+assumptions the feed violates, both still present:
+
+- **A coach's challenge re-issues the overturned play with a far-later sequence
+  number at the same clock.** In PHI@WSH the Embiid foul and turnover come back as
+  `seq 327/328` among neighbours numbered 271–281. That poisons the watermark for
+  the rest of the game — 227 of that game's 549 plays then sit below it, and the
+  replay logs 117 false insertions in that one game.
+- **`_is_retroactive` measures a new play against a live edge computed from a
+  window that includes that play.** So any poll bringing in more than
+  `RETROACTIVE_TOLERANCE_SECONDS` of game clock — a rate-limit skip, a timeout, a
+  long stoppage — flags everything except the newest play. At a 12-play cadence
+  that is 70–94 rows per game. Comparing against the *previous* poll's edge
+  instead would fix it.
+
+Until these are addressed, treat a burst of INSERTED rows sharing one clock
+reading as suspect, and check *Market-Impacting Corrections Only*.

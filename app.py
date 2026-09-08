@@ -30,6 +30,8 @@ endpoint carries everything the markets in this tool need:
     period.number / clock          -> timeframe bucketing
     awayScore / homeScore          -> score at the time of the event
     boxscore ... starter           -> real starters (5 per team)
+    type.id 584 + participants     -> substitution: [0] comes on, [1] goes off,
+                                      which is what the on-floor five is built from
 
 All source-specific parsing is confined to SECTION 3 (fetch) and SECTION 4
 (normalise). Everything downstream works only on the neutral `GameEvent`
@@ -81,6 +83,14 @@ KEY_ALERT_SECONDS = 30
 
 # Key players tracked per team.
 KEY_PLAYERS_PER_TEAM = 2
+
+# On-floor panel (top of the Live tab). How many recently substituted-out players
+# to list per team, and how much GAME clock a player counts as "just came on" for
+# the highlight. Game clock rather than wall clock: at a quarter break the wall
+# clock keeps running while nothing happens, which would expire the highlight on
+# the very subs a trader came back to the desk to see.
+FLOOR_RECENT_SUBS = 2
+FLOOR_FRESH_SECONDS = 90
 
 # Timeframe table ordering. "chronological" -> 12:00-11:01 first (matches the
 # written spec). "reverse" -> 1:00-0:00 first (matches the mock-up sheet).
@@ -181,6 +191,23 @@ CSS = """
 .frow.miss { border-left-color: #cc2200; }
 .frow .sc { opacity: .6; }
 .frow.empty { opacity: .5; }
+
+/* --- on-floor five (top of the Live tab) ---------------------------------
+   Chips rather than a table: five players per team have to fit above the Key
+   Player Tracker without pushing it off the first screen. Same theme variables
+   as everything else, with the orange reserved for "this changed recently",
+   matching .kp.hot and the alert box. */
+.floor { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 4px 0; }
+.floor .p {
+  font-size: 12px; font-weight: 700; white-space: nowrap;
+  padding: 3px 9px; border-radius: 12px;
+  background: rgba(128,128,128,0.10); color: var(--text-color);
+  border: 1px solid transparent;
+}
+.floor .p.fresh { border-color: #ff9900; background: rgba(255,153,0,0.14); }
+.floor .p .cl { font-weight: 500; opacity: .65; margin-left: 6px; }
+.floorout { font-size: 11px; color: var(--text-color); opacity: .6; margin: 0 0 2px 0; }
+.floorout .nm { font-weight: 700; }
 
 /* --- key player card --- */
 .kp {
@@ -545,10 +572,16 @@ def roster_players(team_id: str) -> list[RosterPlayer]:
 KIND_FG = "fg"
 KIND_FT = "ft"
 KIND_TURNOVER = "turnover"
+# Substitutions get their own kind rather than falling into KIND_OTHER: the
+# on-floor panel needs to find them, and naming them makes it explicit that they
+# are outside TRACKED_KINDS and so can never become a correction row.
+KIND_SUB = "sub"
 KIND_OTHER = "other"
 
 # Kinds that participate in stat-correction comparison. Rebounds, fouls and
-# substitutions are excluded so routine feed churn cannot produce noise.
+# substitutions (KIND_SUB) are excluded so routine feed churn cannot produce
+# noise. Substitutions are also kept out of the sequence / live-edge arithmetic
+# in SECTION 6 - see the comment in `detect_corrections` for why that matters.
 TRACKED_KINDS = (KIND_FG, KIND_FT, KIND_TURNOVER)
 
 # Word-boundary match so player names like "Ryan Dunn" never read as a dunk.
@@ -564,6 +597,14 @@ _SHOT_FEET_RE = re.compile(r"(\d+)-foot")
 _THREE_POINT_FEET = 23
 _ISO_CLOCK_RE = re.compile(r"^PT(?:(\d+)M)?(?:([\d.]+)S)?$", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
+
+# ESPN's substitution play. `type.id` 584 is the structured signal and is the one
+# to trust: it was present on 480/480 substitutions measured across 9 games
+# (2025-10-28, Christmas, both 2026 All-Star games, 2026-04-08, Finals game
+# 401859966). The two text checks are a backstop for an older payload that might
+# number play types differently, the same defensive shape as the shot classifier.
+ESPN_SUB_TYPE_ID = "584"
+_SUB_TEXT_RE = re.compile(r"^(?P<incoming>.+?) enters the game for (?P<outgoing>.+?)$")
 
 
 @dataclass(frozen=True)
@@ -588,6 +629,12 @@ class GameEvent:
     type_text: str
     description: str
     short_desc: str
+    # Substitutions only. The player coming ON is already in `player_id` /
+    # `player_name`, because the feed puts them in participants[0] exactly as it
+    # puts a shooter there. These two carry the player going OFF, who would
+    # otherwise be discarded.
+    sub_out_id: str = ""
+    sub_out_name: str = ""
 
     @property
     def is_fg_attempt(self) -> bool:
@@ -596,6 +643,16 @@ class GameEvent:
     @property
     def is_scoring(self) -> bool:
         return self.score_value > 0
+
+    @property
+    def sub_in_id(self) -> str:
+        """For a substitution, the player coming on. Named rather than leaving
+        callers to know that `player_id` means the incoming player here."""
+        return self.player_id if self.kind == KIND_SUB else ""
+
+    @property
+    def sub_in_name(self) -> str:
+        return self.player_name if self.kind == KIND_SUB else ""
 
 
 def norm_text(value: Any) -> str:
@@ -664,6 +721,35 @@ def _shooter_name_from_text(text: str) -> str:
     if plain:
         return plain.group(1).strip()
     return ""
+
+
+def _is_substitution(type_id: str, type_text: str, short_desc: str) -> bool:
+    """Is this play a substitution?
+
+    Checked before `_classify_play` rather than inside it, because the reliable
+    signal is `type.id`, which the classifier is not given. A substitution is not
+    a shooting play and carries no turnover text, so it would otherwise fall
+    through to KIND_OTHER and be invisible to the on-floor panel.
+    """
+    return (
+        type_id == ESPN_SUB_TYPE_ID
+        or type_text.lower() == "substitution"
+        or short_desc.lower() == "substitution"
+    )
+
+
+def _sub_names_from_text(description: str) -> tuple[str, str]:
+    """(coming on, going off) read from 'X enters the game for Y'.
+
+    Name fallback only - the IDs always come from `participants`. Needed because a
+    player can change without ever appearing in the boxscore name map (he never
+    touched the ball), and a bare ESPN athlete id in the panel is useless to a
+    trader. The shape matched 480/480 substitutions across the 9 games measured.
+    """
+    match = _SUB_TEXT_RE.match(norm_text(description))
+    if not match:
+        return "", ""
+    return match.group("incoming").strip(), match.group("outgoing").strip()
 
 
 def _classify_play(short_desc: str, type_text: str, description: str, shooting: bool,
@@ -739,6 +825,7 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
         ) or ""
 
         type_raw = raw.get("type") or {}
+        type_id = str(type_raw.get("id") or "") if isinstance(type_raw, dict) else ""
         type_text = norm_text(type_raw.get("text") if isinstance(type_raw, dict) else "")
         short_desc = norm_text(raw.get("shortDescription"))
         description = norm_text(raw.get("text"))
@@ -754,21 +841,44 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
         except (TypeError, ValueError):
             score_value = 0
 
-        kind, points = _classify_play(
-            short_desc, type_text, description, shooting, pts_attempted, scoring
-        )
+        if _is_substitution(type_id, type_text, short_desc):
+            kind, points = KIND_SUB, 0
+        else:
+            kind, points = _classify_play(
+                short_desc, type_text, description, shooting, pts_attempted, scoring
+            )
 
         # participants[0] is the shooter, including on blocked shots where the
-        # description leads with the blocker's name.
-        player_id = ""
+        # description leads with the blocker's name - and, on a substitution, the
+        # player coming ON.
+        participant_ids: list[str] = []
         for part in raw.get("participants") or []:
             athlete = (part or {}).get("athlete") or {}
             pid = str(athlete.get("id", ""))
             if pid:
-                player_id = pid
-                break
+                participant_ids.append(pid)
+        player_id = participant_ids[0] if participant_ids else ""
 
         player_name = name_map.get(player_id, "") or _shooter_name_from_text(description)
+
+        # participants[1] on a substitution is the player going OFF. Verified by
+        # mapping both ids back to the boxscore names on 480/480 substitutions
+        # across 9 games: [0] was always the one the description names as coming
+        # on, [1] always the one it names as going off, and every substitution
+        # carried exactly two participants. Anything else leaves these empty, and
+        # `team_floor` skips a substitution it cannot read rather than guessing -
+        # a half-applied swap would corrupt the five for the rest of the game.
+        sub_out_id = (
+            participant_ids[1] if kind == KIND_SUB and len(participant_ids) >= 2 else ""
+        )
+        sub_out_name = ""
+        if kind == KIND_SUB:
+            text_in, text_out = _sub_names_from_text(description)
+            # `_shooter_name_from_text` cannot help here: it looks for makes /
+            # misses / blocks, none of which a substitution description contains.
+            player_name = player_name or text_in
+            if sub_out_id:
+                sub_out_name = name_map.get(sub_out_id, "") or text_out
 
         team_raw = raw.get("team") or {}
         team_id = str(team_raw.get("id", "")) if isinstance(team_raw, dict) else ""
@@ -805,6 +915,8 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
                 type_text=type_text,
                 description=description,
                 short_desc=short_desc,
+                sub_out_id=sub_out_id,
+                sub_out_name=sub_out_name,
             )
         )
 
@@ -1087,6 +1199,99 @@ def timeframe_table(events: Sequence[GameEvent], period: int, away_id: str, home
     return rows
 
 
+# --- Players on the floor --------------------------------------------------
+#
+# Derived, never reported. ESPN publishes no on-court field on any endpoint
+# reachable from here - the `summary` payload, the core-API competition object,
+# `/situation` and the per-competitor `/roster` were all checked, and the only
+# lineup information in any of them is the boxscore `starter` flag. So the five
+# are the starters with every substitution applied in feed order.
+#
+# Measured over 9 games / 3,746 plays / 480 substitutions before this was built:
+#   - both teams held exactly five players at all 7,492 team-checkpoints;
+#   - no substitution ever took off a player the reconstruction did not have on,
+#     and none ever brought on a player it already had on;
+#   - 2,335 of 2,338 single-actor plays were by a player it had on the floor.
+# The 3 exceptions are same-clock ordering ties, where the feed lists the
+# substitution just ahead of one last play by the man going off (Q4 30.1 of
+# ATL@CLE: "Dean Wade enters the game for Donovan Mitchell", then Mitchell's
+# turnover). They correct themselves as soon as play moves on, which is why the
+# panel shows the entry clock rather than trying to reorder the feed.
+
+@dataclass(frozen=True)
+class FloorEntry:
+    """A player, plus the game time of the substitution that put them here.
+
+    `period` 0 means "on since the start of the game" - a starter who has not
+    been substituted, for whom there is no substitution clock to show.
+    """
+
+    player_id: str
+    name: str
+    period: int
+    clock_display: str
+
+
+@dataclass(frozen=True)
+class TeamFloor:
+    on_floor: tuple[FloorEntry, ...]
+    recent_out: tuple[FloorEntry, ...]   # most recently substituted out first
+    unverified: int                      # subs applied to a player we had on the bench
+
+
+def team_floor(events: Sequence[GameEvent], team_id: str, starters: Sequence[RosterPlayer],
+               recent_out: int = FLOOR_RECENT_SUBS) -> TeamFloor:
+    """Who is on the floor for one team right now, and who just came off.
+
+    Pure function of the event list, recomputed every poll like every other table
+    in this tool - so it cannot drift out of step with the feed the way stored
+    lineup state would, and a corrected or removed substitution simply stops
+    counting on the next refresh.
+    """
+    if not starters:
+        return TeamFloor((), (), 0)
+
+    on: dict[str, FloorEntry] = {
+        p.player_id: FloorEntry(p.player_id, p.name or p.player_id, 0, "")
+        for p in starters[:5]
+    }
+    went_off: list[FloorEntry] = []
+    unverified = 0
+
+    for ev in events:
+        if ev.kind != KIND_SUB or ev.team_id != team_id:
+            continue
+        if not ev.sub_in_id or not ev.sub_out_id:
+            continue  # unreadable substitution: leave the five alone
+
+        if ev.sub_out_id in on:
+            del on[ev.sub_out_id]
+        else:
+            # Never seen in the measured games. Counted and surfaced rather than
+            # silently swallowed, because it means the five on screen are wrong.
+            unverified += 1
+        went_off.append(
+            FloorEntry(ev.sub_out_id, ev.sub_out_name or ev.sub_out_id, ev.period, ev.clock_display)
+        )
+        on[ev.sub_in_id] = FloorEntry(
+            ev.sub_in_id, ev.sub_in_name or ev.sub_in_id, ev.period, ev.clock_display
+        )
+
+    # Most recent first, one row per player, and never a player who has since
+    # come back on - "Off" has to mean off right now, not off at some point.
+    seen: set[str] = set()
+    recent: list[FloorEntry] = []
+    for entry in reversed(went_off):
+        if entry.player_id in on or entry.player_id in seen:
+            continue
+        seen.add(entry.player_id)
+        recent.append(entry)
+        if len(recent) >= recent_out:
+            break
+
+    return TeamFloor(tuple(on.values()), tuple(recent), unverified)
+
+
 # ===========================================================================
 # SECTION 6 - STAT CORRECTION ENGINE
 #
@@ -1281,8 +1486,27 @@ def detect_corrections(events: Sequence[GameEvent], prev_snapshot: dict[str, dic
     tracked = [e for e in events if e.kind in TRACKED_KINDS]
     current = {e.event_id: fingerprint(e) for e in tracked}
 
+    # `max_seq` and the live edge below come from `tracked`, NOT from every event,
+    # and substitutions are the reason. Measured over 9 games / 3,746 plays:
+    #
+    #   - the first play of every new quarter is a substitution stamped with the
+    #     NEW period at 12:00. An all-events live edge therefore jumps a quarter
+    #     ahead before any shot in that quarter arrives, and a real buzzer-beater
+    #     from the quarter just ended - first seen in that same poll - reads as a
+    #     backdated insertion. CLE@NY (Merrill, Q2 13.4s) and ATL@CLE (Mitchell,
+    #     Q1 0.5s) both did exactly that.
+    #   - substitutions also carry sequence numbers above the newest tracked play
+    #     (329 vs 233 in MIN@ORL), which trips the `by_sequence` test below on the
+    #     next few genuine plays.
+    #
+    # Replaying all 9 games as polls: 279 false insertions before, 199 after
+    # (MIN@ORL 31 -> 0, CHA@MIA 54 -> 12). `total` deliberately stays on every
+    # event: it only feeds the truncation ratio below, both sides of which shrink
+    # together, and a persisted sidecar from an earlier session holds an
+    # all-events count - switching it would make the first poll after a restore
+    # look like a 50% truncation and stall the snapshot.
     total = len(events)
-    max_seq = max((e.sequence for e in events), default=0)
+    max_seq = max((e.sequence for e in tracked), default=0)
     detected_at = datetime.now().astimezone()
     rows: list[dict] = []
     warning: str | None = None
@@ -1316,7 +1540,7 @@ def detect_corrections(events: Sequence[GameEvent], prev_snapshot: dict[str, dic
     #   b) it carries a brand new high sequence number but its game clock sits
     #      well behind the live edge (the feed appended a backdated play).
     # A genuinely new live play fails both tests.
-    live_period, live_clock = _live_edge(events)
+    live_period, live_clock = _live_edge(tracked)
     for eid, fp in current.items():
         if eid in prev_snapshot:
             continue
@@ -2082,9 +2306,115 @@ def render_prematch_tab(tg: TrackedGame) -> None:
             note(f"Lineup source: {source}")
 
 
+def _short_name(name: str) -> str:
+    """'Karl-Anthony Towns' -> 'K. Towns'. Keeps five chips on one or two lines."""
+    parts = name.split()
+    if len(parts) < 2:
+        return name
+    return f"{parts[0][0]}. {' '.join(parts[1:])}"
+
+
+def _jersey_num(jersey: str) -> int:
+    """Jersey as an int for ordering; unnumbered players sort last.
+
+    The five are shown in shirt-number order rather than in the order they came
+    on, so that a glance at the same team twice reads the same way and only the
+    highlight moves.
+    """
+    return int(jersey) if jersey.isdigit() else 999
+
+
+def _floor_is_fresh(entry: FloorEntry, live_period: int, live_clock: float) -> bool:
+    """Did this player come on within FLOOR_FRESH_SECONDS of the live edge?"""
+    if entry.period <= 0 or entry.period != live_period:
+        return False
+    entered = parse_clock_seconds(entry.clock_display)
+    if entered is None:
+        return False
+    # Clock counts DOWN, so a larger value is earlier in the period.
+    return 0 <= entered - live_clock <= FLOOR_FRESH_SECONDS
+
+
+def render_floor_panel(tg: TrackedGame) -> None:
+    """The five on the floor per team, plus who just came off.
+
+    Sits at the very top of the Live tab, above the key-player flash alerts, so
+    its position never moves: an alert appearing would otherwise push it down the
+    screen, which is the one thing a panel meant to be glanced at cannot do.
+    See `team_floor` for how the five are derived and how well that was measured.
+    """
+    game = tg.game
+    roster = list(tg.away_roster) + list(tg.home_roster)
+    jersey_by_id = {p.player_id: p.jersey for p in roster}
+    live_period, live_clock = _live_edge(tg.events)
+
+    def label(entry: FloorEntry) -> str:
+        jersey = jersey_by_id.get(entry.player_id, "")
+        short = _short_name(entry.name)
+        return f"#{jersey} {short}" if jersey else short
+
+    sect("On The Floor")
+    left, right = st.columns(2, gap="medium")
+    for col, team, starters, source in (
+        (left, game.away, tg.away_starters, tg.away_starter_source),
+        (right, game.home, tg.home_starters, tg.home_starter_source),
+    ):
+        with col:
+            floor = team_floor(tg.events, team.team_id, starters)
+            subsect(team.abbr)
+
+            if not floor.on_floor:
+                note("Lineup not available yet.")
+                continue
+
+            chips = []
+            for entry in sorted(
+                floor.on_floor,
+                key=lambda e: (_jersey_num(jersey_by_id.get(e.player_id, "")), e.name),
+            ):
+                fresh = _floor_is_fresh(entry, live_period, live_clock)
+                # The entry clock only appears on a fresh chip. On all five it
+                # doubles the width of the panel for information that is stale
+                # for four of them.
+                when = (
+                    f'<span class="cl">{html.escape(entry.clock_display)} '
+                    f'{html.escape(period_label(entry.period))}</span>'
+                    if fresh and entry.period
+                    else ""
+                )
+                chips.append(
+                    f'<span class="p{" fresh" if fresh else ""}">'
+                    f'{html.escape(label(entry))}{when}</span>'
+                )
+            st.markdown(f'<div class="floor">{"".join(chips)}</div>', unsafe_allow_html=True)
+
+            if floor.recent_out:
+                bits = " &middot; ".join(
+                    f'<span class="nm">{html.escape(label(entry))}</span> '
+                    f'{html.escape(entry.clock_display or DASH)} '
+                    f'{html.escape(period_label(entry.period))}'
+                    for entry in floor.recent_out
+                )
+                st.markdown(f'<div class="floorout">Off: {bits}</div>', unsafe_allow_html=True)
+
+            # Silent while the five are trustworthy, which is the normal case and
+            # keeps the panel to four lines. It speaks up only when they are not.
+            if floor.unverified or len(floor.on_floor) != 5:
+                note(
+                    f"Lineup unverified: {len(floor.on_floor)} players shown, "
+                    f"{floor.unverified} substitution(s) for a player the feed had not "
+                    f"shown on the floor. Check the boxscore before resulting anything."
+                )
+            elif "boxscore" not in source:
+                note(f"Lineup source: {source}")
+
+
 def render_live_tab(tg: TrackedGame) -> None:
     game = tg.game
     away, home = game.away, game.home
+
+    # --- 0. players on the floor (first, so alerts never shift it) ---------
+    render_floor_panel(tg)
 
     # --- key player flash alerts (deduped, time-limited) ------------------
     fresh = []
