@@ -228,16 +228,26 @@ CSS = """
   background-color: #3a1600; color: #ffd966; border: 2px solid #ff9900;
 }
 
-/* --- event feed rows --- */
+/* --- event feed rows (Next Field Goal markets) ----------------------------
+   Each row is a market, not a play: the anchor it was priced under, the result,
+   and - for a make - the market that opened. The two scores have to be told
+   apart at a glance, so the anchor is plain text and the new one is coloured;
+   the clock is pushed right and dimmed, since it is the least of the three. */
 .feed { margin-bottom: 2px; }
 .frow {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px;
   font-size: 13px; padding: 5px 10px; margin-bottom: 3px;
   background: rgba(128,128,128,0.06); border-left: 3px solid transparent;
   color: var(--text-color);
 }
 .frow.made { border-left-color: #00cc44; }
 .frow.miss { border-left-color: #cc2200; }
-.frow .sc { opacity: .6; }
+.frow .anch { font-weight: 700; }
+.frow .res { font-weight: 700; }
+.frow .mk { opacity: .45; }
+.frow .nmk { font-weight: 700; color: #6fd68d; }
+.frow .mk.bad { color: #e08a80; opacity: 1; font-weight: 800; }
+.frow .sc { margin-left: auto; opacity: .6; white-space: nowrap; }
 .frow.empty { opacity: .5; }
 
 /* --- on-floor five (top of the Live tab) ---------------------------------
@@ -1214,13 +1224,118 @@ def fg_attempts(events: Sequence[GameEvent], team_id: str | None = None) -> list
     ]
 
 
-def recent_fg_attempts(events: Sequence[GameEvent], team_id: str | None, count: int,
-                       made_only: bool = False) -> list[GameEvent]:
-    """Most recent field-goal attempts, newest first."""
-    pool = fg_attempts(events, team_id)
+# --- "Next Field Goal after <score>" market anchors ------------------------
+#
+# The market is named after a checkpoint score, and ONLY A MADE FIELD GOAL moves
+# that checkpoint. Free throws and technical points move the scoreboard without
+# opening a new market; a missed field goal moves nothing at all. So the score to
+# show against an attempt is not the live board - it is the board as it stood
+# after the previous made field goal.
+#
+# The checkpoint is read straight off the feed rather than added up from field-goal
+# points, because points arrive between made field goals. Measured on game
+# 401859966 (498 plays, 156 attempts, 72 made): 20 of the 72 new checkpoints would
+# be wrong if derived from field-goal points alone, by 1 to 4 points - e.g. the
+# game's first basket sits on a 0-0 checkpoint and produces 2-2, not 0-2, because
+# Fox had made two free throws first. This costs nothing to get right, because a
+# play's own awayScore / homeScore is already the board immediately after it:
+# every one of the 109 scoring plays in that game had (this play's score minus the
+# previous play's score) equal to its own scoreValue, and the last play's 106-107
+# is the official final. There is no arithmetic to do.
+#
+# Recomputed from the event list on every poll like every other derived view here,
+# which is what makes it survive a stat correction: if a correction adds, removes
+# or re-values a made field goal, the checkpoints from that point on re-derive on
+# the next refresh instead of having to be patched.
+
+
+@dataclass(frozen=True)
+class FGMarketEvent:
+    """A field-goal attempt and the market it belongs to.
+
+    Named in market vocabulary, not feed vocabulary, because these values get read
+    straight against a market name in the trader's other system.
+    """
+
+    event: GameEvent
+    market_anchor_score: tuple[int, int]              # (away, home) the market is named after
+    event_result: str                                 # "NYK Made 3"
+    post_event_score: tuple[int, int]                 # actual board right after this event
+    new_market_anchor_score: tuple[int, int] | None   # made field goals only
+    score_suspect: bool = False                       # feed board moved backwards
+
+    @property
+    def made(self) -> bool:
+        return self.event.made
+
+
+def fg_market_events(events: Sequence[GameEvent],
+                     abbr_for: dict[str, str] | None = None) -> list[FGMarketEvent]:
+    """Every field-goal attempt in feed order, each carrying its market anchor.
+
+    Walks only the field goals: a play's own score already includes every free
+    throw before it, so nothing else has to be visited to keep the board right.
+    The opening market is 0-0.
+    """
+    abbrs = abbr_for or {}
+    anchor = (0, 0)
+    rows: list[FGMarketEvent] = []
+
+    for ev in fg_attempts(events):
+        post = (ev.away_score, ev.home_score)
+        # A board that has gone backwards cannot be right - most likely an absent
+        # awayScore / homeScore, which normalises to 0. Report the attempt against
+        # the last checkpoint we trust rather than moving the market backwards.
+        suspect = post[0] < anchor[0] or post[1] < anchor[1]
+        new_anchor = post if (ev.made and not suspect) else None
+
+        abbr = abbrs.get(ev.team_id, "")
+        result = f"{'Made' if ev.made else 'Missed'} {ev.points}"
+        rows.append(
+            FGMarketEvent(
+                event=ev,
+                market_anchor_score=anchor,
+                event_result=f"{abbr} {result}".strip(),
+                post_event_score=post,
+                new_market_anchor_score=new_anchor,
+                score_suspect=suspect,
+            )
+        )
+        if new_anchor is not None:
+            anchor = new_anchor
+
+    return rows
+
+
+def recent_fg_market_events(events: Sequence[GameEvent], abbr_for: dict[str, str],
+                            team_id: str | None, count: int,
+                            made_only: bool = False) -> list[FGMarketEvent]:
+    """Newest-first slice of `fg_market_events`, filtered for one panel.
+
+    The anchors are derived over the whole game first and only then filtered: a
+    team's checkpoint is moved by the opponent's baskets too, so deriving from one
+    team's attempts in isolation would name the wrong market.
+    """
+    rows = fg_market_events(events, abbr_for)
+    if team_id is not None:
+        rows = [r for r in rows if r.event.team_id == team_id]
     if made_only:
-        pool = [e for e in pool if e.made]
-    return list(reversed(pool[-count:]))
+        rows = [r for r in rows if r.made]
+    return list(reversed(rows[-count:]))
+
+
+def open_market_anchor(events: Sequence[GameEvent]) -> tuple[int, int]:
+    """The checkpoint the currently open market is named after: the board after the
+    last made field goal, or 0-0 before the first one.
+
+    Taken from `fg_market_events` rather than by scanning backwards for a made
+    field goal, so it cannot disagree with the panels about which checkpoint is
+    open - including when one of them was rejected as suspect.
+    """
+    for row in reversed(fg_market_events(events)):
+        if row.new_market_anchor_score is not None:
+            return row.new_market_anchor_score
+    return (0, 0)
 
 
 def latest_made_fg(events: Sequence[GameEvent], player_id: str) -> GameEvent | None:
@@ -1991,23 +2106,45 @@ def format_event_line(ev: GameEvent, away_abbr: str, home_abbr: str,
     return f"{prefix}{result} — {clock} {period_label(ev.period)} — {score}"
 
 
-def render_feed(events: Sequence[GameEvent], away_abbr: str, home_abbr: str,
-                abbr_for: dict[str, str], include_team: bool, empty_text: str) -> None:
-    if not events:
+def _anchor_text(score: tuple[int, int]) -> str:
+    """'2-0'. Away first, home second, matching the market name."""
+    return f"{score[0]}-{score[1]}"
+
+
+def render_feed(rows: Sequence[FGMarketEvent], empty_text: str) -> None:
+    """Field-goal attempts as the markets they belong to.
+
+    A made attempt reads `After 2-0 -> NYK Made 3 -> new market 4-3`: the market
+    that settled, the result that settled it, and the market that opened. A miss
+    reads `After 2-0 -> NYK Missed 3`, because a miss leaves the same market open
+    and showing the live board there would name a market that does not exist.
+    """
+    if not rows:
         st.markdown(
             f'<div class="frow empty">{html.escape(empty_text)}</div>', unsafe_allow_html=True
         )
         return
+
     parts = []
-    for ev in events:
-        line = format_event_line(
-            ev, away_abbr, home_abbr, abbr_for.get(ev.team_id, ""), include_team
-        )
-        head, _, tail = line.rpartition(" — ")
-        cls = "made" if ev.made else "miss"
+    for row in rows:
+        ev = row.event
+        cls = "made" if row.made else "miss"
+        opened = ""
+        if row.new_market_anchor_score is not None:
+            opened = (
+                '<span class="mk">&rarr;</span>'
+                f'<span class="nmk">new market {_anchor_text(row.new_market_anchor_score)}</span>'
+            )
+        flag = '<span class="mk bad">score?</span>' if row.score_suspect else ""
         parts.append(
-            f'<div class="frow {cls}">{html.escape(head)} — '
-            f'<span class="sc">{html.escape(tail)}</span></div>'
+            f'<div class="frow {cls}">'
+            f'<span class="anch">After {_anchor_text(row.market_anchor_score)}</span>'
+            '<span class="mk">&rarr;</span>'
+            f'<span class="res">{html.escape(row.event_result)}</span>'
+            f'{opened}{flag}'
+            f'<span class="sc">{html.escape(ev.clock_display or DASH)} '
+            f'{html.escape(period_label(ev.period))}</span>'
+            "</div>"
         )
     st.markdown(f'<div class="feed">{"".join(parts)}</div>', unsafe_allow_html=True)
 
@@ -2723,24 +2860,33 @@ def render_live_tab(tg: TrackedGame) -> None:
 
     # --- 2. three most recent FG attempts per team + made-shots feed -------
     sect(f"{RECENT_FG_COUNT} Most Recent Field Goal Attempts")
+    note(
+        f"Open market: Next Field Goal after "
+        f"{_anchor_text(open_market_anchor(tg.events))} "
+        f"({away.abbr}-{home.abbr}). Every row names the market the attempt was "
+        f"priced under. Only a made field goal moves that score - free throws move "
+        f"the scoreboard without opening a new market."
+    )
     c_away, c_made, c_home = st.columns(3, gap="medium")
     with c_away:
         subsect(away.display_name)
         render_feed(
-            recent_fg_attempts(tg.events, away.team_id, RECENT_FG_COUNT),
-            away.abbr, home.abbr, tg.abbr_for, True, "No field goal attempts yet.",
+            recent_fg_market_events(tg.events, tg.abbr_for, away.team_id, RECENT_FG_COUNT),
+            "No field goal attempts yet.",
         )
     with c_made:
         subsect("Made Shots")
         render_feed(
-            recent_fg_attempts(tg.events, None, RECENT_FG_COUNT, made_only=True),
-            away.abbr, home.abbr, tg.abbr_for, True, "No made field goals yet.",
+            recent_fg_market_events(
+                tg.events, tg.abbr_for, None, RECENT_FG_COUNT, made_only=True
+            ),
+            "No made field goals yet.",
         )
     with c_home:
         subsect(home.display_name)
         render_feed(
-            recent_fg_attempts(tg.events, home.team_id, RECENT_FG_COUNT),
-            away.abbr, home.abbr, tg.abbr_for, True, "No field goal attempts yet.",
+            recent_fg_market_events(tg.events, tg.abbr_for, home.team_id, RECENT_FG_COUNT),
+            "No field goal attempts yet.",
         )
 
     # --- 3. timeframe table ----------------------------------------------

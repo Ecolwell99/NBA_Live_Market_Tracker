@@ -480,3 +480,53 @@ assumptions the feed violates, both still present:
 
 Until these are addressed, treat a burst of INSERTED rows sharing one clock
 reading as suspect, and check *Market-Impacting Corrections Only*.
+
+### 4.8 Next Field Goal market anchors
+
+The market is *Next Field Goal after `<score>`*, and that score is a **checkpoint
+only a made field goal moves**. Free throws and technicals move the scoreboard
+without opening a new market; a missed field goal moves nothing. So the score shown
+against an attempt is not the live board — it is the board as it stood after the
+previous made field goal. `fg_market_events` derives it and stores four values per
+attempt: `market_anchor_score`, `event_result`, `post_event_score`, and
+`new_market_anchor_score` (made field goals only).
+
+- Rows read `After 14-5 → SA Made 2 → new market 16-9` for a make and
+  `After 14-5 → SA Missed 2` for a miss. **Scores are away-home**, stated with the
+  two abbreviations in the line above the panels along with the open market.
+- **The checkpoint is read off the feed, never added up from field-goal points.**
+  Measured on game 401859966 (498 plays, 164 field-goal attempts by the app's own
+  classifier, 72 made, 48 free throws): **20 of the 72 new checkpoints would be
+  wrong if computed from field-goal points alone**, by 1 to 4 points. The game's
+  first basket is the clearest case — Towns makes 2 on a 0-0 checkpoint and the new
+  checkpoint is 2-2, not 0-2, because Fox had already made two free throws.
+- **There is no arithmetic to do, because ESPN's per-play score is post-play.**
+  Every one of that game's 109 scoring plays had (its own score − the previous
+  play's score) equal to its own `scoreValue`, 0 exceptions, and the last play's
+  106-107 is the official final. So `ev.away_score` / `ev.home_score` *is*
+  `post_event_score`.
+- **What this fixed:** 25 of the game's 92 missed attempts were displaying a board
+  ahead of the market anchor by 1–4 points, i.e. naming a market that did not
+  exist. Made rows were showing the score after the basket with no indication of
+  whether that was the market that settled or the one that opened; they now show
+  both.
+- **Anchors are derived over the whole game and only then filtered per panel.** A
+  team's checkpoint is moved by its opponent's baskets too, so deriving from one
+  team's attempts alone would name the wrong market.
+- **Corrections are handled by re-derivation, not patching.** Like every other
+  derived view here it is a pure function of the event list, recomputed each poll,
+  so a correction that adds, removes or re-values a made field goal re-anchors
+  everything after it on the next refresh. This relies on ESPN restating the
+  affected plays' `awayScore` / `homeScore` when it restates the play — consistent
+  with the whole play list being re-sent each poll, but **not yet observed on a
+  live correction**.
+- **Guard:** if a made field goal's board is *below* the current checkpoint, the
+  checkpoint is not moved and the row is flagged `score?`. That means an absent
+  `awayScore` / `homeScore`, which normalises to 0. It happened 0 times in the
+  measured game; the alternative was walking the market backwards.
+- Checked over the same game: 0 chain breaks (every row's anchor equals the
+  previous made row's post score), 0 makes without a new checkpoint, 0 misses with
+  one, and the final checkpoint equals both the last made field goal's board and
+  the official final score.
+- **Deliberately unchanged:** the Key Player Tracker line and the first-shot tables
+  still show the plain board, because they are not market names.
