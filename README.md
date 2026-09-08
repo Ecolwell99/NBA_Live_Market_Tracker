@@ -70,7 +70,7 @@ message and the precedence; only the rendering differs.
   classified) are in this README and in comments at the call site, not on screen. The
   grey `note` helper survives only for *state*: "Lineup not available yet", "Lineup
   source: boxscore", the lineup-unverified warning, "Activates when the third quarter
-  begins", and the live `Open market: Next Field Goal after 14-5` line, which is data.
+  begins", and the two empty-state lines. No section carries a caption.
 - **Teams are named in full wherever a panel is headed by one** — "San Antonio Spurs",
   not "SA KP". Abbreviations appear only inside rows that mix teams.
 
@@ -527,8 +527,14 @@ attempt: `market_anchor_score`, `event_result`, `post_event_score`, and
   the columns line up. Makes and misses take the same shape.
   `new_market_anchor_score` is stored but **deliberately not rendered**: on a make it
   is the same number as the next row's anchor, and printing it on every make made the
-  panel unreadable. **Scores are away-home**, stated with the two abbreviations in
-  the caption above the panels along with the open market.
+  panel unreadable. **Scores are away-home**, as everywhere else in the tool.
+- **The panels carry no caption, and one consequence is worth knowing.** The
+  checkpoint the market is open on *right now* is the newest made field goal's
+  post-score, so it is never itself an `After` value and appears nowhere on the
+  Live tab — it will show up as the next attempt's `After` once that attempt happens.
+  The caption used to state it; it was removed on the user's instruction along with the
+  rest of the explanatory text, and `open_market_anchor()` was deleted with its only
+  call site. Reinstate both if the open checkpoint is wanted on screen again.
 - **The team abbreviation appears only where a panel mixes teams.** `render_feed`
   takes `include_team`, on for the middle *Made Field Goals* panel (`SA Made 2`) and
   off for the two team panels, where every row would carry the same abbreviation and

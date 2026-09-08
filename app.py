@@ -1344,20 +1344,6 @@ def recent_fg_market_events(events: Sequence[GameEvent], abbr_for: dict[str, str
     return list(reversed(rows[-count:]))
 
 
-def open_market_anchor(events: Sequence[GameEvent]) -> tuple[int, int]:
-    """The checkpoint the currently open market is named after: the board after the
-    last made field goal, or 0-0 before the first one.
-
-    Taken from `fg_market_events` rather than by scanning backwards for a made
-    field goal, so it cannot disagree with the panels about which checkpoint is
-    open - including when one of them was rejected as suspect.
-    """
-    for row in reversed(fg_market_events(events)):
-        if row.new_market_anchor_score is not None:
-            return row.new_market_anchor_score
-    return (0, 0)
-
-
 def latest_made_fg(events: Sequence[GameEvent], player_id: str) -> GameEvent | None:
     for ev in reversed(events):
         if ev.kind == KIND_FG and ev.made and ev.player_id == player_id:
@@ -2877,12 +2863,10 @@ def render_live_tab(tg: TrackedGame) -> None:
 
     # --- 2. three most recent FG attempts per team + made-shots feed -------
     sect(f"{RECENT_FG_COUNT} Most Recent Field Goal Attempts")
-    # Live market state, not a description of the section - kept, unlike the
-    # explanatory captions.
-    note(
-        f"Open market: Next Field Goal after "
-        f"{_anchor_text(open_market_anchor(tg.events))} ({away.abbr}-{home.abbr})"
-    )
+    # No caption. Note this does drop the one thing the caption said that the rows do
+    # not: the checkpoint the market is open on RIGHT NOW, which is the newest made
+    # field goal's post-score and so is never itself an "After" value. Scores are
+    # away-home, as everywhere else in the tool.
     c_away, c_made, c_home = st.columns(3, gap="medium")
     with c_away:
         subsect(away.display_name)
