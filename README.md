@@ -347,6 +347,12 @@ re-flash the same correction; it stays visible for `CORRECTION_BANNER_SECONDS`
   lists them chronologically. Chronological is the default, per the written spec.
   Set `TIMEFRAME_ORDER = "reverse"` in SECTION 1 to match the sheet.
 - **Number of recent attempts** is one constant: `RECENT_FG_COUNT = 3`.
+- **Do not drop `.block-container { padding-top }` below ~3.5rem.** Streamlit's top
+  bar overlaps the main block rather than sitting in flow, so at the sibling tools'
+  `1rem` the first element on the page — the scoreline — renders underneath it and
+  cannot be scrolled to, because the page is already at scroll 0. Hiding the bar is
+  not the fix: it holds the sidebar toggle, which is the only way to reopen a
+  collapsed sidebar.
 - **Rate limits.** ESPN's public endpoints are unauthenticated and undocumented,
   with no published limit. Fetches are cached (`scoreboard` 20s, `summary` ~3s,
   `roster` 1h) and a `429` surfaces as a "DATA DELAY" banner rather than a
@@ -395,6 +401,14 @@ Other things to know:
 - **If a substitution takes off a player the panel did not have on**, the swap is
   still applied but the team is labelled *Lineup unverified* with a count. That
   never happened in the measured games; if it appears, check the boxscore.
+- **Shirt numbers come from the boxscore, not from `teams/{id}/roster`.** The
+  roster endpoint is the *current* roster, so it cannot number a player who has
+  since left the team: for game 401859966 it knows only 11 of the 15 athletes who
+  played for San Antonio (no Olynyk, Waters, Biyombo or Plumlee) and carries no
+  jersey at all for 5 of the 19 it does list, while the boxscore has one for
+  **30/30** athletes in the game. Chips were rendering as bare names because of
+  it. The rosters are still the fallback, for the pre-tip window before a boxscore
+  exists.
 - A player is highlighted (orange, as with a key-player alert) for
   `FLOOR_FRESH_SECONDS = 90` of **game** clock after coming on — game clock, not
   wall clock, so a quarter break does not expire the highlight on the very subs

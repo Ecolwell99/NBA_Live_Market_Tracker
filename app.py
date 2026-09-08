@@ -149,8 +149,14 @@ TABS = (TAB_PREMATCH, TAB_LIVE, TAB_CORRECTIONS)
 
 CSS = """
 <style>
-/* Tighten default Streamlit padding */
-.block-container { padding-top: 1rem; padding-bottom: 1rem; }
+/* Tighten default Streamlit padding. padding-top has to stay above the height of
+   Streamlit's own top bar (2.875rem), which overlaps the main block rather than
+   sitting in flow: at the sibling tools' 1rem the first element on the page — here
+   the scoreline — renders underneath it and cannot be scrolled to, because the page
+   is already at scroll 0. 3.5rem clears it with ~10px to spare. Do not hide the bar
+   instead; it holds the sidebar toggle, which is the only way back when the sidebar
+   is collapsed. */
+.block-container { padding-top: 3.5rem; padding-bottom: 1rem; }
 /* Remove red underline from metric delta */
 [data-testid="stMetricDelta"] svg { display: none; }
 
@@ -937,15 +943,26 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
     return events
 
 
-def extract_boxscore_players(payload: dict) -> tuple[dict[str, str], dict[str, list[RosterPlayer]]]:
-    """(id -> name map, team_id -> starters) from the boxscore.
+def extract_boxscore_players(
+    payload: dict,
+) -> tuple[dict[str, str], dict[str, list[RosterPlayer]], dict[str, str]]:
+    """(id -> name map, team_id -> starters, id -> jersey) from the boxscore.
 
     `starter` is a real flag in this feed and yields exactly five players per
     team once the boxscore is published (typically well before tip-off). It is
     empty for a game that has not been posted yet - see `resolve_starters`.
+
+    The jersey map covers every athlete in the boxscore, not just the starters,
+    because `teams/{id}/roster` is the CURRENT roster and cannot number a player
+    who has since left: for game 401859966 the boxscore carries a jersey for
+    30/30 athletes, while San Antonio's roster endpoint knows only 11 of the 15
+    who played for them (Olynyk, Waters, Biyombo and Plumlee are gone) and lists
+    no jersey at all for 5 of its own 19 athletes. On-floor chips were rendering
+    without a number because of it.
     """
     names: dict[str, str] = {}
     starters: dict[str, list[RosterPlayer]] = {}
+    jerseys: dict[str, str] = {}
 
     box = payload.get("boxscore") or {}
     for team_block in box.get("players") or []:
@@ -960,19 +977,22 @@ def extract_boxscore_players(payload: dict) -> tuple[dict[str, str], dict[str, l
                 nm = athlete.get("displayName") or athlete.get("shortName") or ""
                 if nm:
                     names[pid] = nm
+                num = str(athlete.get("jersey") or "")
+                if num:
+                    jerseys[pid] = num
                 pos = athlete.get("position") or {}
                 if entry.get("starter"):
                     found.append(
                         RosterPlayer(
                             player_id=pid,
                             name=nm,
-                            jersey=str(athlete.get("jersey") or ""),
+                            jersey=num,
                             position=(pos.get("abbreviation") or "") if isinstance(pos, dict) else "",
                         )
                     )
         if team_id and found:
             starters[team_id] = found[:5]
-    return names, starters
+    return names, starters, jerseys
 
 
 def resolve_starters(
@@ -2257,6 +2277,9 @@ class TrackedGame:
     home_starters: list[RosterPlayer] = field(default_factory=list)
     away_starter_source: str = ""
     home_starter_source: str = ""
+    # id -> shirt number, boxscore first and the current rosters only as a fallback
+    # (see `extract_boxscore_players`). Empty until the boxscore is published.
+    jersey_by_id: dict[str, str] = field(default_factory=dict)
     max_period: int = 0
 
     @property
@@ -2344,8 +2367,7 @@ def render_floor_panel(tg: TrackedGame) -> None:
     See `team_floor` for how the five are derived and how well that was measured.
     """
     game = tg.game
-    roster = list(tg.away_roster) + list(tg.home_roster)
-    jersey_by_id = {p.player_id: p.jersey for p in roster}
+    jersey_by_id = tg.jersey_by_id
     live_period, live_clock = _live_edge(tg.events)
 
     def label(entry: FloorEntry) -> str:
@@ -2590,9 +2612,12 @@ def build_tracked_game(game: GameInfo) -> TrackedGame:
     if payload is None:
         return tg
 
-    box_names, box_starters = extract_boxscore_players(payload)
+    box_names, box_starters, box_jerseys = extract_boxscore_players(payload)
     name_map = {p.player_id: p.name for p in away_roster + home_roster}
     name_map.update(box_names)  # boxscore names win: they match the pbp exactly
+
+    tg.jersey_by_id = {p.player_id: p.jersey for p in away_roster + home_roster if p.jersey}
+    tg.jersey_by_id.update(box_jerseys)  # and boxscore numbers win, same reason
 
     tg.events = normalise_plays(payload, name_map)
     tg.max_period = max((e.period for e in tg.events), default=0)
