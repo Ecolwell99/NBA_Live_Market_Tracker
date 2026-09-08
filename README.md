@@ -491,9 +491,12 @@ previous made field goal. `fg_market_events` derives it and stores four values p
 attempt: `market_anchor_score`, `event_result`, `post_event_score`, and
 `new_market_anchor_score` (made field goals only).
 
-- Rows read `After 14-5 → SA Made 2 → new market 16-9` for a make and
-  `After 14-5 → SA Missed 2` for a miss. **Scores are away-home**, stated with the
-  two abbreviations in the line above the panels along with the open market.
+- A row shows **three things and nothing else**: the anchor score, the result, the
+  game time — `After 14-5 → SA Made 2   6:20 3Q`, makes and misses alike.
+  `new_market_anchor_score` is stored but **deliberately not rendered**: on a make it
+  is the same number as the next row's anchor, and printing it on every make made the
+  panel unreadable. **Scores are away-home**, stated with the two abbreviations in
+  the caption above the panels along with the open market.
 - **The checkpoint is read off the feed, never added up from field-goal points.**
   Measured on game 401859966 (498 plays, 164 field-goal attempts by the app's own
   classifier, 72 made, 48 free throws): **20 of the 72 new checkpoints would be
@@ -507,9 +510,8 @@ attempt: `market_anchor_score`, `event_result`, `post_event_score`, and
   `post_event_score`.
 - **What this fixed:** 25 of the game's 92 missed attempts were displaying a board
   ahead of the market anchor by 1–4 points, i.e. naming a market that did not
-  exist. Made rows were showing the score after the basket with no indication of
-  whether that was the market that settled or the one that opened; they now show
-  both.
+  exist. Made rows were showing the score after the basket, which is the market that
+  *opened*, where the row is about the one that *settled*.
 - **Anchors are derived over the whole game and only then filtered per panel.** A
   team's checkpoint is moved by its opponent's baskets too, so deriving from one
   team's attempts alone would name the wrong market.

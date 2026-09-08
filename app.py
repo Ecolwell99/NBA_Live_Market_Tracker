@@ -229,10 +229,9 @@ CSS = """
 }
 
 /* --- event feed rows (Next Field Goal markets) ----------------------------
-   Each row is a market, not a play: the anchor it was priced under, the result,
-   and - for a make - the market that opened. The two scores have to be told
-   apart at a glance, so the anchor is plain text and the new one is coloured;
-   the clock is pushed right and dimmed, since it is the least of the three. */
+   Each row is a market, not a play: the anchor score it was priced under, the
+   result, the game time. Three things only. The clock is pushed right and dimmed
+   because it is the least of the three. */
 .feed { margin-bottom: 2px; }
 .frow {
   display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px;
@@ -245,7 +244,6 @@ CSS = """
 .frow .anch { font-weight: 700; }
 .frow .res { font-weight: 700; }
 .frow .mk { opacity: .45; }
-.frow .nmk { font-weight: 700; color: #6fd68d; }
 .frow .mk.bad { color: #e08a80; opacity: 1; font-weight: 800; }
 .frow .sc { margin-left: auto; opacity: .6; white-space: nowrap; }
 .frow.empty { opacity: .5; }
@@ -2112,12 +2110,12 @@ def _anchor_text(score: tuple[int, int]) -> str:
 
 
 def render_feed(rows: Sequence[FGMarketEvent], empty_text: str) -> None:
-    """Field-goal attempts as the markets they belong to.
+    """Field-goal attempts against the market each was priced under.
 
-    A made attempt reads `After 2-0 -> NYK Made 3 -> new market 4-3`: the market
-    that settled, the result that settled it, and the market that opened. A miss
-    reads `After 2-0 -> NYK Missed 3`, because a miss leaves the same market open
-    and showing the live board there would name a market that does not exist.
+    Three things and nothing else: the anchor score, the result, the game time.
+    `After 2-0 -> NYK Made 3`. The score a make opens the next market on is held in
+    `new_market_anchor_score` and deliberately NOT rendered - it is the same number
+    as the next row's anchor, and printing it on every make made the panel unreadable.
     """
     if not rows:
         st.markdown(
@@ -2129,19 +2127,12 @@ def render_feed(rows: Sequence[FGMarketEvent], empty_text: str) -> None:
     for row in rows:
         ev = row.event
         cls = "made" if row.made else "miss"
-        opened = ""
-        if row.new_market_anchor_score is not None:
-            opened = (
-                '<span class="mk">&rarr;</span>'
-                f'<span class="nmk">new market {_anchor_text(row.new_market_anchor_score)}</span>'
-            )
         flag = '<span class="mk bad">score?</span>' if row.score_suspect else ""
         parts.append(
             f'<div class="frow {cls}">'
             f'<span class="anch">After {_anchor_text(row.market_anchor_score)}</span>'
             '<span class="mk">&rarr;</span>'
-            f'<span class="res">{html.escape(row.event_result)}</span>'
-            f'{opened}{flag}'
+            f'<span class="res">{html.escape(row.event_result)}</span>{flag}'
             f'<span class="sc">{html.escape(ev.clock_display or DASH)} '
             f'{html.escape(period_label(ev.period))}</span>'
             "</div>"
@@ -2862,10 +2853,8 @@ def render_live_tab(tg: TrackedGame) -> None:
     sect(f"{RECENT_FG_COUNT} Most Recent Field Goal Attempts")
     note(
         f"Open market: Next Field Goal after "
-        f"{_anchor_text(open_market_anchor(tg.events))} "
-        f"({away.abbr}-{home.abbr}). Every row names the market the attempt was "
-        f"priced under. Only a made field goal moves that score - free throws move "
-        f"the scoreboard without opening a new market."
+        f"{_anchor_text(open_market_anchor(tg.events))} ({away.abbr}-{home.abbr}). "
+        f"Each row shows the anchor score its attempt was priced under."
     )
     c_away, c_made, c_home = st.columns(3, gap="medium")
     with c_away:
