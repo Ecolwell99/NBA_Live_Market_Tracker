@@ -230,14 +230,23 @@ CSS = """
 
 /* --- event feed rows (Next Field Goal markets) ----------------------------
    Each row is a market, not a play: the anchor score it was priced under, the
-   result, the game time. Three things only. The clock is pushed right and dimmed
-   because it is the least of the three. */
+   result, the game time. Three things only, so the words "After" and the team
+   abbreviation live in the header instead of repeating down every row. Header and
+   rows share the same grid and the same padding + 3px left border so the three
+   columns line up; the clock is right-aligned and dimmed because it is the least
+   of the three. */
 .feed { margin-bottom: 2px; }
+.fhead, .frow {
+  display: grid; grid-template-columns: 58px 1fr auto; gap: 8px;
+  align-items: baseline; padding: 5px 10px; border-left: 3px solid transparent;
+}
+.fhead {
+  font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-color); opacity: .45; padding-bottom: 1px;
+}
 .frow {
-  display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px;
-  font-size: 13px; padding: 5px 10px; margin-bottom: 3px;
-  background: rgba(128,128,128,0.06); border-left: 3px solid transparent;
-  color: var(--text-color);
+  font-size: 13px; margin-bottom: 3px;
+  background: rgba(128,128,128,0.06); color: var(--text-color);
 }
 .frow.made { border-left-color: #00cc44; }
 .frow.miss { border-left-color: #cc2200; }
@@ -245,8 +254,9 @@ CSS = """
 .frow .res { font-weight: 700; }
 .frow .mk { opacity: .45; }
 .frow .mk.bad { color: #e08a80; opacity: 1; font-weight: 800; }
-.frow .sc { margin-left: auto; opacity: .6; white-space: nowrap; }
-.frow.empty { opacity: .5; }
+.fhead .sc, .frow .sc { text-align: right; white-space: nowrap; }
+.frow .sc { opacity: .6; }
+.frow.empty { display: block; font-size: 13px; opacity: .5; }
 
 /* --- on-floor five (top of the Live tab) ---------------------------------
    One panel per team, five rows each, full names at 14px: this is read at a
@@ -1266,6 +1276,17 @@ class FGMarketEvent:
     def made(self) -> bool:
         return self.event.made
 
+    @property
+    def result_no_team(self) -> str:
+        """`event_result` without the team, for a panel that is already one team's:
+        'SA Made 2' repeated down the San Antonio column says nothing."""
+        return _result_text(self.event)
+
+
+def _result_text(ev: GameEvent) -> str:
+    """'Made 2' / 'Missed 3'. One definition, used with and without a team prefix."""
+    return f"{'Made' if ev.made else 'Missed'} {ev.points}"
+
 
 def fg_market_events(events: Sequence[GameEvent],
                      abbr_for: dict[str, str] | None = None) -> list[FGMarketEvent]:
@@ -1288,12 +1309,11 @@ def fg_market_events(events: Sequence[GameEvent],
         new_anchor = post if (ev.made and not suspect) else None
 
         abbr = abbrs.get(ev.team_id, "")
-        result = f"{'Made' if ev.made else 'Missed'} {ev.points}"
         rows.append(
             FGMarketEvent(
                 event=ev,
                 market_anchor_score=anchor,
-                event_result=f"{abbr} {result}".strip(),
+                event_result=f"{abbr} {_result_text(ev)}".strip(),
                 post_event_score=post,
                 new_market_anchor_score=new_anchor,
                 score_suspect=suspect,
@@ -2109,13 +2129,16 @@ def _anchor_text(score: tuple[int, int]) -> str:
     return f"{score[0]}-{score[1]}"
 
 
-def render_feed(rows: Sequence[FGMarketEvent], empty_text: str) -> None:
+def render_feed(rows: Sequence[FGMarketEvent], empty_text: str,
+                include_team: bool = False) -> None:
     """Field-goal attempts against the market each was priced under.
 
-    Three things and nothing else: the anchor score, the result, the game time.
-    `After 2-0 -> NYK Made 3`. The score a make opens the next market on is held in
-    `new_market_anchor_score` and deliberately NOT rendered - it is the same number
-    as the next row's anchor, and printing it on every make made the panel unreadable.
+    Three columns under one header - After, Result, Time - rather than repeating
+    "After" and the team on every line. `include_team` is for the combined panel
+    only; inside a team's own panel the abbreviation is the same on every row.
+
+    The score a make opens the next market on is held in `new_market_anchor_score`
+    and deliberately NOT rendered: it is the same number as the next row's anchor.
     """
     if not rows:
         st.markdown(
@@ -2123,16 +2146,19 @@ def render_feed(rows: Sequence[FGMarketEvent], empty_text: str) -> None:
         )
         return
 
-    parts = []
+    parts = [
+        '<div class="fhead"><span>After</span><span>Result</span>'
+        '<span class="sc">Time</span></div>'
+    ]
     for row in rows:
         ev = row.event
-        cls = "made" if row.made else "miss"
-        flag = '<span class="mk bad">score?</span>' if row.score_suspect else ""
+        result = row.event_result if include_team else row.result_no_team
+        # Inside the Result cell, not as a fourth column, so the grid stays aligned.
+        flag = ' <span class="mk bad">score?</span>' if row.score_suspect else ""
         parts.append(
-            f'<div class="frow {cls}">'
-            f'<span class="anch">After {_anchor_text(row.market_anchor_score)}</span>'
-            '<span class="mk">&rarr;</span>'
-            f'<span class="res">{html.escape(row.event_result)}</span>{flag}'
+            f'<div class="frow {"made" if row.made else "miss"}">'
+            f'<span class="anch">{_anchor_text(row.market_anchor_score)}</span>'
+            f'<span class="res">{html.escape(result)}{flag}</span>'
             f'<span class="sc">{html.escape(ev.clock_display or DASH)} '
             f'{html.escape(period_label(ev.period))}</span>'
             "</div>"
@@ -2864,12 +2890,14 @@ def render_live_tab(tg: TrackedGame) -> None:
             "No field goal attempts yet.",
         )
     with c_made:
-        subsect("Made Shots")
+        subsect("Made Field Goals")
+        # The only panel that mixes teams, so the only one that needs the abbreviation.
         render_feed(
             recent_fg_market_events(
                 tg.events, tg.abbr_for, None, RECENT_FG_COUNT, made_only=True
             ),
             "No made field goals yet.",
+            include_team=True,
         )
     with c_home:
         subsect(home.display_name)

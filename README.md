@@ -491,12 +491,28 @@ previous made field goal. `fg_market_events` derives it and stores four values p
 attempt: `market_anchor_score`, `event_result`, `post_event_score`, and
 `new_market_anchor_score` (made field goals only).
 
-- A row shows **three things and nothing else**: the anchor score, the result, the
-  game time — `After 14-5 → SA Made 2   6:20 3Q`, makes and misses alike.
+- A row shows **three things and nothing else**, under one header per panel —
+  **After / Result / Time** — so the word "After" is written once instead of on every
+  line:
+
+  ```
+  AFTER     RESULT           TIME
+  14-5      Made 2        6:20 3Q
+  12-5      Missed 3      7:04 3Q
+  ```
+
+  Header and rows share a 3-column grid and the same padding and 3px left border, so
+  the columns line up. Makes and misses take the same shape.
   `new_market_anchor_score` is stored but **deliberately not rendered**: on a make it
   is the same number as the next row's anchor, and printing it on every make made the
   panel unreadable. **Scores are away-home**, stated with the two abbreviations in
   the caption above the panels along with the open market.
+- **The team abbreviation appears only where a panel mixes teams.** `render_feed`
+  takes `include_team`, on for the middle *Made Field Goals* panel (`SA Made 2`) and
+  off for the two team panels, where every row would carry the same abbreviation and
+  it says nothing. One helper, `_result_text`, defines `Made 2` / `Missed 3`; the
+  prefixed form is `event_result` and the bare form is the `result_no_team` property,
+  so the two can never drift.
 - **The checkpoint is read off the feed, never added up from field-goal points.**
   Measured on game 401859966 (498 plays, 164 field-goal attempts by the app's own
   classifier, 72 made, 48 free throws): **20 of the 72 new checkpoints would be
