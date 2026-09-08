@@ -121,6 +121,12 @@ RETROACTIVE_TOLERANCE_SECONDS = 45
 HTTP_TIMEOUT = 12
 DASH = "-"
 
+# Substitution direction markers, coloured green / red by .arw in the CSS. Literal
+# glyphs like the sidebar's play triangle rather than HTML entities, so they also
+# read correctly in a plain `st.caption` or a log line if one ever needs them.
+ARROW_IN = "↑"    # up, green: coming on
+ARROW_OUT = "↓"   # down, red: going off
+
 # Cooldown after an HTTP 429: skip this many refresh ticks before polling again,
 # as the NHL / NFL / MLB tools all do. Without it the autorefresh keeps hammering
 # a feed that has already told us to back off.
@@ -237,8 +243,10 @@ CSS = """
 /* --- on-floor five (top of the Live tab) ---------------------------------
    One panel per team, five rows each, full names at 14px: this is read at a
    glance from a distance while subbing players by hand in another system, so
-   legibility beats compactness. Orange stays reserved for "this changed
-   recently", matching .kp.hot. */
+   legibility beats compactness. Direction is carried by a green up arrow rather
+   than by an orange fill: the fill read as a warning for what is a routine event,
+   and green / red for on / off is the same language as .frow.made / .frow.miss
+   and the timeframe Yes / No. Greens and reds are the existing ones. */
 .lu {
   border: 1px solid var(--secondary-background-color); border-radius: 10px;
   overflow: hidden; margin: 2px 0 4px 0;
@@ -256,16 +264,24 @@ CSS = """
 .lurow .nm { font-weight: 700; }
 .lurow .cl { margin-left: auto; font-size: 12px; font-weight: 700; opacity: .75; }
 /* After the striping, so an entering player wins on equal specificity. */
-.lurow.in { background: rgba(255,153,0,0.14); border-left-color: #ff9900; }
-.lurow.in .cl { color: #ffbe55; opacity: 1; }
+.lurow.in { border-left-color: #6fd68d; }
+.lurow.in .cl { color: #6fd68d; opacity: 1; }
+
+/* Shared by both blocks so an up arrow means the same thing in each. */
+.arw {
+  min-width: 10px; text-align: center; font-weight: 900; line-height: 1;
+}
+.arw.in { color: #6fd68d; }
+.arw.out { color: #e08a80; }
 
 /* --- recent substitutions (under each team's own five) -------------------
    Under the team panel rather than in a full-width banner: the trader works one
    team at a time while subbing by hand, so the change belongs next to that
    team's list, and a bar across the page was far more alarm than a routine
-   substitution deserves. Only the newest row is at full contrast, with the
-   incoming name in the same orange as the highlighted row above it; older rows
-   fade back so the eye lands on the newest one without any colour fill.
+   substitution deserves. Every row reads at the same contrast - the newest was
+   brighter than the rest for one round and the difference just looked like a
+   rendering fault, since the list is already ordered newest first and the arrow
+   in the panel above marks the current change.
    Persistent on purpose - no expiry, same as the highlight. */
 .subs { margin: 5px 0 10px 0; }
 .subhd {
@@ -273,15 +289,12 @@ CSS = """
   color: var(--text-color); opacity: .45; margin: 0 0 2px 2px;
 }
 .subrow {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
-  padding: 2px; font-size: 12px; color: var(--text-color); opacity: .5;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 2px; font-size: 12px; color: var(--text-color); opacity: .85;
 }
-.subrow.last { opacity: 1; }
 .subrow .gt { min-width: 54px; font-weight: 700; opacity: .7; }
-.subrow .lb { font-size: 10px; font-weight: 800; letter-spacing: .06em; opacity: .55; }
 .subrow .io { font-weight: 700; }
-.subrow .io.out { opacity: .8; }
-.subrow.last .io.in { color: #ffbe55; }
+.subrow .io.out { margin-left: 2px; }
 
 /* --- timeframe table -----------------------------------------------------
    Its own narrow table rather than `html_table`: two columns of short values do
@@ -2528,15 +2541,21 @@ def _jersey_num(jersey: str) -> int:
 
     The five are shown in shirt-number order rather than in the order they came
     on, so that a glance at the same team twice reads the same way and only the
-    highlight moves.
+    arrow moves.
     """
     return int(jersey) if jersey.isdigit() else 999
 
 
 def _lineup_row(entry: FloorEntry, jersey: str, entering: bool) -> str:
-    """One player row. Full name, shirt number, and the entry clock when they are
-    the player who just came on."""
+    """One player row. Full name, shirt number, and - for the player who just came
+    on - a green up arrow and the clock they came on at.
+
+    The arrow slot is emitted on every row, empty where there is nothing to mark,
+    so the shirt numbers stay in one column and the five do not shuffle sideways
+    when a substitution lands.
+    """
     num = f"#{jersey}" if jersey else DASH
+    arrow = f'<span class="arw in">{ARROW_IN}</span>' if entering else '<span class="arw"></span>'
     when = (
         f'<span class="cl">{html.escape(entry.clock_display)} '
         f'{html.escape(period_label(entry.period))}</span>'
@@ -2544,7 +2563,7 @@ def _lineup_row(entry: FloorEntry, jersey: str, entering: bool) -> str:
         else ""
     )
     return (
-        f'<div class="lurow{" in" if entering else ""}">'
+        f'<div class="lurow{" in" if entering else ""}">{arrow}'
         f'<span class="num">{html.escape(num)}</span>'
         f'<span class="nm">{html.escape(entry.name)}</span>{when}</div>'
     )
@@ -2553,23 +2572,26 @@ def _lineup_row(entry: FloorEntry, jersey: str, entering: bool) -> str:
 def render_recent_subs(events: Sequence[GameEvent], team_id: str) -> None:
     """One team's recent substitutions, newest first, under its own five.
 
-    The newest row is the one the highlight above refers to, so it is the only one
-    at full contrast. No team label and no `SUB` tag: it sits inside that team's
-    column, directly under that team's players, which says both already.
+    Green up arrow for the player coming on, red down arrow for the player going
+    off, so the direction is readable without parsing the sentence. Every row is
+    at the same contrast: the order already says which is newest. No team label
+    and no `SUB` tag either - it sits inside that team's column, directly under
+    that team's players, which says both already.
     """
     subs = recent_team_subs(events, team_id)
     if not subs:
         return
 
     rows = "".join(
-        f'<div class="subrow{" last" if i == 0 else ""}">'
+        '<div class="subrow">'
         f'<span class="gt">{html.escape(ev.clock_display or DASH)} '
         f'{html.escape(period_label(ev.period))}</span>'
+        f'<span class="arw in">{ARROW_IN}</span>'
         f'<span class="io in">{html.escape(ev.sub_in_name or ev.sub_in_id)}</span>'
-        f'<span class="lb">for</span>'
+        f'<span class="arw out">{ARROW_OUT}</span>'
         f'<span class="io out">{html.escape(ev.sub_out_name or ev.sub_out_id)}</span>'
         "</div>"
-        for i, ev in enumerate(subs)
+        for ev in subs
     )
     st.markdown(
         f'<div class="subs"><div class="subhd">Recent subs</div>{rows}</div>',
@@ -2585,10 +2607,10 @@ def render_floor_panel(tg: TrackedGame) -> None:
     screen, which is the one thing a panel meant to be glanced at cannot do.
     See `team_floor` for how the five are derived and how well that was measured.
 
-    The row highlight comes from `latest_substitutions` (both teams, the whole
-    break) while the list underneath comes from `recent_team_subs` (this team,
-    longer history), so the highlighted row is always the top line of the list
-    below it and never contradicts it.
+    The green up arrow on a row comes from `latest_substitutions` (both teams, the
+    whole break) while the list underneath comes from `recent_team_subs` (this
+    team, longer history), so an arrowed player is always the incoming name on the
+    top line of the list below and the two never contradict each other.
     """
     game = tg.game
     jersey_by_id = tg.jersey_by_id
