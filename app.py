@@ -85,12 +85,14 @@ KEY_ALERT_SECONDS = 30
 KEY_PLAYERS_PER_TEAM = 2
 
 # On-floor panel (top of the Live tab). How many recently substituted-out players
-# to list per team, and how much GAME clock a player counts as "just came on" for
-# the highlight. Game clock rather than wall clock: at a quarter break the wall
-# clock keeps running while nothing happens, which would expire the highlight on
-# the very subs a trader came back to the desk to see.
+# to list per team, and how many substitution pairs one alert will list.
+#
+# There is deliberately no expiry on either the highlight or the alert. Both are
+# driven by the most recent substitution in the feed and stand until the next one
+# arrives: the trader may be mid-entry in the other system when a sub lands, and a
+# highlight that had timed out by the time they looked up would be worse than none.
 FLOOR_RECENT_SUBS = 2
-FLOOR_FRESH_SECONDS = 90
+SUB_ALERT_MAX = 6
 
 # Timeframe table ordering. "chronological" -> 12:00-11:01 first (matches the
 # written spec). "reverse" -> 1:00-0:00 first (matches the mock-up sheet).
@@ -152,32 +154,65 @@ CSS = """
 /* Tighten default Streamlit padding. padding-top has to stay above the height of
    Streamlit's own top bar (2.875rem), which overlaps the main block rather than
    sitting in flow: at the sibling tools' 1rem the first element on the page — here
-   the scoreline — renders underneath it and cannot be scrolled to, because the page
-   is already at scroll 0. 3.5rem clears it with ~10px to spare. Do not hide the bar
+   the game header — renders underneath it and cannot be scrolled to, because the
+   page is already at scroll 0. 3.5rem clears it with ~10px to spare. Do not hide the bar
    instead; it holds the sidebar toggle, which is the only way back when the sidebar
    is collapsed. */
 .block-container { padding-top: 3.5rem; padding-bottom: 1rem; }
 /* Remove red underline from metric delta */
 [data-testid="stMetricDelta"] svg { display: none; }
 
-/* --- section labels: a small-caps rule instead of a big header --- */
+/* --- section labels ------------------------------------------------------
+   Full-contrast (no opacity) and 15px, with a left accent bar as well as the
+   rule. The bar is what lets a heading sit in a narrow column next to a button
+   (Key Player Tracker) and still read as a section heading. */
 .sect {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-  font-weight: 700; color: var(--text-color); opacity: .6;
-  margin: 16px 0 6px 0; padding-bottom: 3px;
+  font-size: 15px; text-transform: uppercase; letter-spacing: .06em;
+  font-weight: 800; color: var(--text-color);
+  margin: 20px 0 8px 0; padding: 1px 0 5px 10px;
+  /* The theme's own accent, with the configured value as the fallback for a
+     Streamlit build that does not publish the variable. Not the red used on the
+     active tab: a red bar on every heading reads as a warning. */
+  border-left: 4px solid var(--primary-color, #5b8dd6);
   border-bottom: 1px solid var(--secondary-background-color);
 }
 .sect:first-child { margin-top: 4px; }
 .subsect {
-  font-size: 12px; font-weight: 700; color: var(--text-color); margin: 10px 0 4px 0;
+  font-size: 14px; font-weight: 800; color: var(--text-color);
+  letter-spacing: .01em; margin: 10px 0 5px 0;
 }
 .note { font-size: 11px; color: var(--text-color); opacity: .55; margin: 3px 0 0 0; }
 
-/* --- scoreboard line --- */
-.scoreline {
-  font-size: 22px; font-weight: 900; color: var(--text-color); letter-spacing: .02em;
+/* --- game header ---------------------------------------------------------
+   The one block that answers "what am I looking at": both teams, both scores,
+   period, clock, and when the feed last came back. Grid rather than flex so the
+   scores stay put as the clock text changes width. */
+.gh {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px;
+  padding: 12px 18px; margin: 0 0 10px 0; border-radius: 12px;
+  background: rgba(128,128,128,0.05);
+  border: 1px solid var(--secondary-background-color);
+  color: var(--text-color);
 }
-.scoreline .st { font-size: 14px; font-weight: 700; opacity: .6; margin-left: 10px; }
+.gh .tm { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.gh .tm.h { justify-content: flex-end; }
+.gh .nm { font-size: 16px; font-weight: 800; }
+.gh .sc { font-size: 34px; font-weight: 900; line-height: 1; }
+.gh .mid { text-align: center; }
+.gh .ck { font-size: 20px; font-weight: 800; white-space: nowrap; }
+.gh .pd { font-size: 13px; font-weight: 700; opacity: .7; margin-left: 6px; }
+.gh .up { font-size: 11px; opacity: .55; margin-top: 3px; white-space: nowrap; }
+
+/* --- compact status line (the normal, nothing-wrong state) ---------------
+   The big house banner is kept for every state that needs attention; STATUS: OK
+   does not, and at 22px it was the loudest thing on the page. */
+.statusline {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 12px 0;
+  font-size: 12px; font-weight: 700; color: var(--text-color); opacity: .85;
+}
+.statusline .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #2ecc71; flex: 0 0 auto;
+}
 
 /* --- alerts (key-player flash) --- */
 .alert {
@@ -199,21 +234,75 @@ CSS = """
 .frow.empty { opacity: .5; }
 
 /* --- on-floor five (top of the Live tab) ---------------------------------
-   Chips rather than a table: five players per team have to fit above the Key
-   Player Tracker without pushing it off the first screen. Same theme variables
-   as everything else, with the orange reserved for "this changed recently",
-   matching .kp.hot and the alert box. */
-.floor { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 4px 0; }
-.floor .p {
-  font-size: 12px; font-weight: 700; white-space: nowrap;
-  padding: 3px 9px; border-radius: 12px;
-  background: rgba(128,128,128,0.10); color: var(--text-color);
-  border: 1px solid transparent;
+   One panel per team, five rows each, full names at 14px: this is read at a
+   glance from a distance while subbing players by hand in another system, so
+   legibility beats compactness. Orange stays reserved for "this changed
+   recently", matching .kp.hot and the alert box. */
+.lu {
+  border: 1px solid var(--secondary-background-color); border-radius: 10px;
+  overflow: hidden; margin: 2px 0 4px 0;
 }
-.floor .p.fresh { border-color: #ff9900; background: rgba(255,153,0,0.14); }
-.floor .p .cl { font-weight: 500; opacity: .65; margin-left: 6px; }
-.floorout { font-size: 11px; color: var(--text-color); opacity: .6; margin: 0 0 2px 0; }
-.floorout .nm { font-weight: 700; }
+.lurow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; font-size: 14px; color: var(--text-color);
+  border-left: 3px solid transparent;
+}
+.lurow + .lurow { border-top: 1px solid rgba(128,128,128,0.12); }
+.lurow:nth-child(odd) { background: rgba(128,128,128,0.04); }
+.lurow .num {
+  min-width: 30px; text-align: right; font-size: 12px; font-weight: 800; opacity: .55;
+}
+.lurow .nm { font-weight: 700; }
+.lurow .cl { margin-left: auto; font-size: 12px; font-weight: 700; opacity: .75; }
+/* After the striping, so an entering player wins on equal specificity. */
+.lurow.in { background: rgba(255,153,0,0.14); border-left-color: #ff9900; }
+.lurow.in .cl { color: #ffbe55; opacity: 1; }
+.floorout { font-size: 12px; color: var(--text-color); opacity: .65; margin: 4px 0 2px 0; }
+.floorout .nm { font-weight: 700; opacity: .9; }
+
+/* --- substitution alert (full width, persistent) -------------------------
+   Persistent on purpose: it is not a flash like .alert, it stands until the
+   feed publishes the next substitution, because the trader may be mid-entry in
+   another system when it lands. */
+.subalert {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  font-size: 14px; font-weight: 700; padding: 9px 14px; border-radius: 8px;
+  margin: 6px 0 2px 0;
+  background-color: #3a1600; color: #ffd966; border: 2px solid #ff9900;
+}
+.subalert .tag {
+  font-size: 11px; font-weight: 800; letter-spacing: .08em;
+  padding: 2px 8px; border-radius: 10px; background: #ff9900; color: #000000;
+}
+.subalert .tm { font-weight: 800; }
+.subalert .gt { opacity: .8; }
+.subalert .io { color: #ffffff; font-weight: 800; }
+.subalert .lb { font-size: 11px; font-weight: 800; letter-spacing: .06em; opacity: .7; }
+
+/* --- timeframe table -----------------------------------------------------
+   Its own narrow table rather than `html_table`: two columns of short values do
+   not need the full page width, and the loud Yes / No pills read as alarms in a
+   twelve-row grid where most rows are routine. */
+.tfwrap { margin: 2px 0 0 0; }
+.tf { border-collapse: collapse; width: auto; min-width: 300px; max-width: 380px; }
+.tf th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 800;
+  text-align: left; padding: 5px 16px 5px 12px; white-space: nowrap;
+  color: var(--text-color); opacity: .7;
+  border-bottom: 2px solid var(--secondary-background-color);
+}
+.tf td {
+  font-size: 13px; padding: 5px 16px 5px 12px; white-space: nowrap;
+  color: var(--text-color); border-left: 3px solid transparent;
+}
+.tf tr:nth-child(even) td { background: rgba(128,128,128,0.05); }
+.tf td.v { font-weight: 800; }
+.tf td.yes { color: #6fd68d; }
+.tf td.no { color: #e08a80; }
+.tf td.na { opacity: .35; font-weight: 700; }
+/* Current / most recently completed window. After the striping, same reason. */
+.tf tr.cur td { background: rgba(255,153,0,0.10); font-weight: 800; }
+.tf tr.cur td:first-child { border-left-color: #ff9900; }
 
 /* --- key player card --- */
 .kp {
@@ -249,6 +338,16 @@ CSS = """
 .st-key-active_tab div[role="radiogroup"] > label > div:first-child:has(input) {
   display: none;
 }
+
+/* --- small secondary button ----------------------------------------------
+   Scoped to the Edit Key Players toggle by its keyed-widget wrapper class, the
+   same mechanism as the tab strip above. Streamlit has no small-button size, so
+   this is the only way to get one; if the selector ever stops matching, the
+   button reverts to full size and still works. */
+.st-key-edit_kp button {
+  padding: 2px 12px; min-height: 0; font-size: 12px; font-weight: 700;
+}
+.st-key-edit_kp button p { font-size: 12px; margin: 0; }
 </style>
 """
 
@@ -1312,6 +1411,26 @@ def team_floor(events: Sequence[GameEvent], team_id: str, starters: Sequence[Ros
     return TeamFloor(tuple(on.values()), tuple(recent), unverified)
 
 
+def latest_substitutions(events: Sequence[GameEvent],
+                         limit: int = SUB_ALERT_MAX) -> list[GameEvent]:
+    """The most recent substitution break, in feed order.
+
+    A break rather than a single play: at a timeout the feed publishes five or six
+    substitutions at the same clock reading, and showing only the last of them
+    would hide the rest of the change. Every substitution sharing the final one's
+    period and clock is returned, both teams together.
+    """
+    subs = [e for e in events if e.kind == KIND_SUB and e.sub_in_id and e.sub_out_id]
+    if not subs:
+        return []
+    last = subs[-1]
+    same = [
+        e for e in subs
+        if e.period == last.period and e.clock_display == last.clock_display
+    ]
+    return same[-limit:]
+
+
 # ===========================================================================
 # SECTION 6 - STAT CORRECTION ENGINE
 #
@@ -1627,6 +1746,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "selected_game_label": None,
     "tracking": False,
     "active_tab": TAB_PREMATCH,
+    "show_key_editor": False,  # UI only, like active_tab: never cleared, never saved
     "rate_limit_skip_remaining": 0,
     "key_players": {"away": [], "home": []},
     "kp_active": set(),
@@ -1908,6 +2028,76 @@ def warning_box(message: str, warning_type: str = "ok") -> None:
     st.markdown(
         f'<div style="margin-top:10px; margin-bottom:18px; padding:16px; border-radius:10px;'
         f' font-size:22px; font-weight:700; {style}">{message}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def status_line(message: str) -> None:
+    """The compact form of the banner, for the state that needs no attention.
+
+    `warning_box` is kept for every state that does. `message` is injected as
+    HTML, exactly as there, so callers escape feed-derived text themselves.
+    """
+    st.markdown(
+        f'<div class="statusline"><span class="dot"></span>{message}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def game_header(game: GameInfo, clock_text: str, period_text: str, updated: str) -> None:
+    """Teams, scores, period, clock and the last successful poll, in one block.
+
+    Scores sit inboard of the names so the eye lands on the two numbers together.
+    """
+    period = (
+        f'<span class="pd">{html.escape(period_text)}</span>' if period_text else ""
+    )
+    st.markdown(
+        '<div class="gh">'
+        f'<div class="tm"><span class="nm">{html.escape(game.away.display_name)}</span>'
+        f'<span class="sc">{game.away_score}</span></div>'
+        '<div class="mid">'
+        f'<div class="ck">{html.escape(clock_text or DASH)}{period}</div>'
+        f'<div class="up">Updated {html.escape(updated or DASH)}</div>'
+        '</div>'
+        f'<div class="tm h"><span class="sc">{game.home_score}</span>'
+        f'<span class="nm">{html.escape(game.home.display_name)}</span></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+_TF_CLASS = {"Yes": "yes", "No": "no"}
+
+
+def render_timeframe(rows: Sequence[dict], current_label: str = "") -> None:
+    """Narrow Time / Result table for the timeframe market.
+
+    Not `html_table`: two columns of short values do not need the page width, and
+    the house Yes / No pills read as alarms down twelve rows where most rows are
+    routine. The Quarter column the selectbox above already states is dropped
+    here rather than in `timeframe_table`, which stays the market's own function.
+
+    `current_label` is the window in play, or the last completed one - the row a
+    trader is actually pricing.
+    """
+    if not rows:
+        st.info("No data.")
+        return
+    body = []
+    for row in rows:
+        label = str(row.get("Time", ""))
+        verdict = str(row.get("Yes/No", DASH))
+        cls = _TF_CLASS.get(verdict, "na")
+        cur = ' class="cur"' if label and label == current_label else ""
+        body.append(
+            f'<tr{cur}><td>{html.escape(label)}</td>'
+            f'<td class="v {cls}">{html.escape(verdict)}</td></tr>'
+        )
+    st.markdown(
+        '<div class="tfwrap"><table class="tf">'
+        '<thead><tr><th>Time</th><th>Both Scored</th></tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table></div>',
         unsafe_allow_html=True,
     )
 
@@ -2329,14 +2519,6 @@ def render_prematch_tab(tg: TrackedGame) -> None:
             note(f"Lineup source: {source}")
 
 
-def _short_name(name: str) -> str:
-    """'Karl-Anthony Towns' -> 'K. Towns'. Keeps five chips on one or two lines."""
-    parts = name.split()
-    if len(parts) < 2:
-        return name
-    return f"{parts[0][0]}. {' '.join(parts[1:])}"
-
-
 def _jersey_num(jersey: str) -> int:
     """Jersey as an int for ordering; unnumbered players sort last.
 
@@ -2347,15 +2529,54 @@ def _jersey_num(jersey: str) -> int:
     return int(jersey) if jersey.isdigit() else 999
 
 
-def _floor_is_fresh(entry: FloorEntry, live_period: int, live_clock: float) -> bool:
-    """Did this player come on within FLOOR_FRESH_SECONDS of the live edge?"""
-    if entry.period <= 0 or entry.period != live_period:
-        return False
-    entered = parse_clock_seconds(entry.clock_display)
-    if entered is None:
-        return False
-    # Clock counts DOWN, so a larger value is earlier in the period.
-    return 0 <= entered - live_clock <= FLOOR_FRESH_SECONDS
+def _lineup_row(entry: FloorEntry, jersey: str, entering: bool) -> str:
+    """One player row. Full name, shirt number, and the entry clock when they are
+    the player who just came on."""
+    num = f"#{jersey}" if jersey else DASH
+    when = (
+        f'<span class="cl">{html.escape(entry.clock_display)} '
+        f'{html.escape(period_label(entry.period))}</span>'
+        if entering and entry.period and entry.clock_display
+        else ""
+    )
+    return (
+        f'<div class="lurow{" in" if entering else ""}">'
+        f'<span class="num">{html.escape(num)}</span>'
+        f'<span class="nm">{html.escape(entry.name)}</span>{when}</div>'
+    )
+
+
+def render_sub_alerts(tg: TrackedGame) -> None:
+    """Full-width alert per team for the latest substitution break.
+
+    One bar per team rather than per player: a timeout change is five or six
+    substitutions at the same clock, and six identical orange bars is noise. Each
+    bar carries the team, the game time, and every player in / player out pair.
+    """
+    subs = latest_substitutions(tg.events)
+    if not subs:
+        return
+
+    by_team: dict[str, list[GameEvent]] = {}
+    for ev in subs:
+        by_team.setdefault(ev.team_id, []).append(ev)
+
+    for team_id, evs in by_team.items():
+        first = evs[0]
+        when = f"{first.clock_display or DASH} {period_label(first.period)}"
+        pairs = '<span class="gt">|</span>'.join(
+            f'<span class="lb">IN</span> '
+            f'<span class="io">{html.escape(ev.sub_in_name or ev.sub_in_id)}</span> '
+            f'<span class="lb">OUT</span> '
+            f'<span class="io">{html.escape(ev.sub_out_name or ev.sub_out_id)}</span>'
+            for ev in evs
+        )
+        st.markdown(
+            '<div class="subalert"><span class="tag">SUB</span>'
+            f'<span class="tm">{html.escape(tg.abbr_for.get(team_id, ""))}</span>'
+            f'<span class="gt">{html.escape(when)}</span>{pairs}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def render_floor_panel(tg: TrackedGame) -> None:
@@ -2365,15 +2586,14 @@ def render_floor_panel(tg: TrackedGame) -> None:
     its position never moves: an alert appearing would otherwise push it down the
     screen, which is the one thing a panel meant to be glanced at cannot do.
     See `team_floor` for how the five are derived and how well that was measured.
+
+    The highlight and the substitution alert are driven by the same call to
+    `latest_substitutions`, so a highlighted row and the bar underneath can never
+    disagree about who just came on.
     """
     game = tg.game
     jersey_by_id = tg.jersey_by_id
-    live_period, live_clock = _live_edge(tg.events)
-
-    def label(entry: FloorEntry) -> str:
-        jersey = jersey_by_id.get(entry.player_id, "")
-        short = _short_name(entry.name)
-        return f"#{jersey} {short}" if jersey else short
+    entering = {ev.sub_in_id for ev in latest_substitutions(tg.events)}
 
     sect("On The Floor")
     left, right = st.columns(2, gap="medium")
@@ -2383,44 +2603,36 @@ def render_floor_panel(tg: TrackedGame) -> None:
     ):
         with col:
             floor = team_floor(tg.events, team.team_id, starters)
-            subsect(team.abbr)
+            subsect(team.display_name)
 
             if not floor.on_floor:
                 note("Lineup not available yet.")
                 continue
 
-            chips = []
-            for entry in sorted(
-                floor.on_floor,
-                key=lambda e: (_jersey_num(jersey_by_id.get(e.player_id, "")), e.name),
-            ):
-                fresh = _floor_is_fresh(entry, live_period, live_clock)
-                # The entry clock only appears on a fresh chip. On all five it
-                # doubles the width of the panel for information that is stale
-                # for four of them.
-                when = (
-                    f'<span class="cl">{html.escape(entry.clock_display)} '
-                    f'{html.escape(period_label(entry.period))}</span>'
-                    if fresh and entry.period
-                    else ""
+            rows = "".join(
+                _lineup_row(
+                    entry,
+                    jersey_by_id.get(entry.player_id, ""),
+                    entry.player_id in entering,
                 )
-                chips.append(
-                    f'<span class="p{" fresh" if fresh else ""}">'
-                    f'{html.escape(label(entry))}{when}</span>'
+                for entry in sorted(
+                    floor.on_floor,
+                    key=lambda e: (_jersey_num(jersey_by_id.get(e.player_id, "")), e.name),
                 )
-            st.markdown(f'<div class="floor">{"".join(chips)}</div>', unsafe_allow_html=True)
+            )
+            st.markdown(f'<div class="lu">{rows}</div>', unsafe_allow_html=True)
 
             if floor.recent_out:
                 bits = " &middot; ".join(
-                    f'<span class="nm">{html.escape(label(entry))}</span> '
+                    f'<span class="nm">{html.escape(entry.name)}</span> '
                     f'{html.escape(entry.clock_display or DASH)} '
                     f'{html.escape(period_label(entry.period))}'
                     for entry in floor.recent_out
                 )
                 st.markdown(f'<div class="floorout">Off: {bits}</div>', unsafe_allow_html=True)
 
-            # Silent while the five are trustworthy, which is the normal case and
-            # keeps the panel to four lines. It speaks up only when they are not.
+            # Silent while the five are trustworthy, which is the normal case.
+            # It speaks up only when they are not.
             if floor.unverified or len(floor.on_floor) != 5:
                 note(
                     f"Lineup unverified: {len(floor.on_floor)} players shown, "
@@ -2429,6 +2641,10 @@ def render_floor_panel(tg: TrackedGame) -> None:
                 )
             elif "boxscore" not in source:
                 note(f"Lineup source: {source}")
+
+    # Full width, below the panels: an alert above them would push the five down
+    # the screen every time a substitution landed.
+    render_sub_alerts(tg)
 
 
 def render_live_tab(tg: TrackedGame) -> None:
@@ -2452,16 +2668,26 @@ def render_live_tab(tg: TrackedGame) -> None:
         )
 
     # --- 1. key player tracker -------------------------------------------
-    sect("Key Player Tracker")
-    with st.expander("Edit Key Players (injuries / lineup changes)"):
-        st.caption(
-            "Changing a key player keeps the correction log, first-basket results and "
-            "everything else already recorded. A newly selected player starts from their "
-            "current state, so no stale alert fires."
-        )
-        e_away, e_home = st.columns(2, gap="medium")
-        key_player_controls(e_away, "away", away, tg.away_roster, "live")
-        key_player_controls(e_home, "home", home, tg.home_roster, "live")
+    # Heading and its action on one row. The editor is a plain container behind a
+    # small secondary button rather than an expander, so the heading is not
+    # competing with a full-width clickable bar for attention.
+    h_col, b_col = st.columns([8, 2], vertical_alignment="bottom")
+    with h_col:
+        sect("Key Player Tracker")
+    with b_col:
+        if st.button("Edit Key Players", key="edit_kp", type="secondary"):
+            st.session_state.show_key_editor = not st.session_state.show_key_editor
+
+    if st.session_state.show_key_editor:
+        with st.container(border=True):
+            st.caption(
+                "Changing a key player keeps the correction log, first-basket results and "
+                "everything else already recorded. A newly selected player starts from their "
+                "current state, so no stale alert fires."
+            )
+            e_away, e_home = st.columns(2, gap="medium")
+            key_player_controls(e_away, "away", away, tg.away_roster, "live")
+            key_player_controls(e_home, "home", home, tg.home_roster, "live")
 
     name_by_id = {p.player_id: p.name for p in list(tg.away_roster) + list(tg.home_roster)}
     k_away, k_home = st.columns(2, gap="medium")
@@ -2520,10 +2746,28 @@ def render_live_tab(tg: TrackedGame) -> None:
         period = st.selectbox(
             "Quarter", options=periods, format_func=period_label, key="timeframe_period",
         )
-    html_table(timeframe_table(tg.events, period, away.team_id, home.team_id, game.is_final))
+
+    # The row being priced: the window the clock is in, or the last one if the
+    # quarter is over. Read-only use of the same two helpers the table itself uses.
+    windows = timeframe_windows(period)
+    lowest, finished = period_progress(tg.events, period)
+    finished = finished or game.is_final
+    current_label = ""
+    if finished:
+        current_label = windows[-1][0]
+    elif lowest is not None:
+        idx = window_index(lowest, period)
+        if idx is not None:
+            current_label = windows[idx][0]
+
+    render_timeframe(
+        timeframe_table(tg.events, period, away.team_id, home.team_id, game.is_final),
+        current_label,
+    )
     note(
         "Yes = both teams scored inside the exact window (field goals and free throws). "
-        "No = window complete with both teams not scoring. - = not reached or in progress."
+        "No = window complete with both teams not scoring. - = not reached or in progress. "
+        "The highlighted row is the window in play, or the last one completed."
     )
 
     # --- 4. second half ---------------------------------------------------
@@ -2725,7 +2969,7 @@ def main() -> None:
         if game_error:
             warning_box(f"⚠ {html.escape(game_error)}", "alert")
         else:
-            warning_box("STATUS: OK — Load a game and click Track Game", "ok")
+            status_line("STATUS: OK — Load a game and click Track Game")
         note(
             "Sidebar: Load Live Games (or enter a Game ID) → select a game → set two "
             "key players per team → Track Game. No play-by-play requests are made "
@@ -2757,22 +3001,22 @@ def main() -> None:
     game = refresh_live_status(game)
     tg = build_tracked_game(game)
 
-    header = (
-        f"{game.away.display_name} {game.away_score}  @  "
-        f"{game.home.display_name} {game.home_score}"
-    )
-    status = game.status_detail or ("Not started" if game.state == "pre" else "")
+    # Same status derivation as before, split into clock and period for the header.
+    clock_text = game.status_detail or ("Not started" if game.state == "pre" else "")
+    period_text = ""
     if game.is_live and tg.events:
         last = tg.events[-1]
-        status = f"{period_label(last.period)} {last.clock_display}"
-    st.markdown(
-        f'<div class="scoreline">{html.escape(header)}'
-        f'<span class="st">{html.escape(status)}</span></div>',
-        unsafe_allow_html=True,
-    )
+        clock_text, period_text = last.clock_display, period_label(last.period)
+    game_header(game, clock_text, period_text, st.session_state.last_fetch_ok or "")
 
-    # One banner, above the tab strip, exactly as the other tools place it.
-    warning_box(*banner_state())
+    # One status, above the tab strip, exactly where the other tools place it.
+    # Anything that needs attention keeps the house banner; STATUS: OK does not,
+    # so it drops to a single compact line.
+    message, kind = banner_state()
+    if kind == "ok":
+        status_line(message)
+    else:
+        warning_box(message, kind)
 
     if game.state == "pre":
         note("Game has not started. Prematch tables will populate from the first play.")

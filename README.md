@@ -42,6 +42,16 @@ No play-by-play request is made until you press **Track Game**. Once tracking, t
 app auto-refreshes every 4s (15s if the game has not tipped off, and not at all
 once the game is final). **Refresh now** in the sidebar forces a fetch.
 
+### What sits above the tabs
+
+A **game header** — both teams, both scores, the period and clock, and the time of
+the last successful poll — then a **one-line status**. The big house banner
+(`warning_box`, as in the NFL and NHL tools) is still there, but only for a state
+that wants attention: a live stat correction, a data delay, a feed warning or a
+rate-limit cooldown. `STATUS: OK` does not want attention, so it drops to
+`status_line`, a compact line with a green dot. `banner_state()` still decides the
+message and the precedence; only the rendering differs.
+
 ### Add game by ID
 
 The sidebar's **Add game by ID** expander takes a bare ESPN event id
@@ -337,6 +347,13 @@ re-flash the same correction; it stays visible for `CORRECTION_BANNER_SECONDS`
   handled, but it is the single most likely place a provider change breaks
   bucketing — every event in the last minute of a quarter depends on it.
 - Overtime uses 5-minute periods (5 windows), regulation 12 (12 windows).
+- **The table drops the Quarter column** the selectbox above it already states, and
+  is rendered narrow rather than full width by `render_timeframe`. The dropped
+  column and the muted Yes / No colours are presentation only: `timeframe_table`
+  still returns the same three keys and still decides every verdict.
+- **The highlighted row** is the window in play, or the last completed one if the
+  quarter is over — derived in the UI from `period_progress` and `window_index`,
+  the same two helpers the table itself uses.
 
 ### 4.5 Other
 
@@ -409,11 +426,24 @@ Other things to know:
   **30/30** athletes in the game. Chips were rendering as bare names because of
   it. The rosters are still the fallback, for the pre-tip window before a boxscore
   exists.
-- A player is highlighted (orange, as with a key-player alert) for
-  `FLOOR_FRESH_SECONDS = 90` of **game** clock after coming on — game clock, not
-  wall clock, so a quarter break does not expire the highlight on the very subs
-  you came back to the desk to see. `FLOOR_RECENT_SUBS = 2` sets how many
-  substituted-off players are listed.
+- **One panel per team, five rows, full names.** It is read at a glance from a
+  distance while players are being subbed by hand in another system, so
+  legibility beats compactness. Rows are in shirt-number order, so the same team
+  reads the same way twice and only the highlight moves.
+- **The highlight and the substitution alert never expire and never disagree.**
+  Both come from one call to `latest_substitutions`, which returns the most recent
+  substitution *break* — every substitution sharing the last one's period and
+  clock, because a timeout change is five or six plays at the same clock reading
+  and showing one of them would hide the rest. The entering players' rows are
+  highlighted orange and a full-width bar per team states the team, the game time,
+  and each player in / player out pair. Nothing times out: it stands until the feed
+  publishes the next substitution, because the trader may be mid-entry elsewhere
+  when it lands. `SUB_ALERT_MAX = 6` caps the pairs in one break;
+  `FLOOR_RECENT_SUBS = 2` sets how many substituted-off players the `Off:` line
+  lists.
+- The alert renders **below** the two panels. Above them, every substitution would
+  push the five down the screen — the one thing a panel meant to be glanced at
+  cannot do.
 - **Unverified against a live feed.** Everything above is measured on completed
   games. If a live `summary` response returns only a trailing window of plays
   rather than the whole history, the five would have to be accumulated across
