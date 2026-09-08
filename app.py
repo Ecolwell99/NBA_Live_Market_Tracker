@@ -84,15 +84,16 @@ KEY_ALERT_SECONDS = 30
 # Key players tracked per team.
 KEY_PLAYERS_PER_TEAM = 2
 
-# On-floor panel (top of the Live tab). How many recently substituted-out players
-# to list per team, and how many substitution pairs one alert will list.
+# On-floor panel (top of the Live tab). How many recent substitutions to list under
+# each team's five, and how many pairs of one simultaneous change can highlight at
+# once (a timeout change is five or six substitutions at the same clock reading).
 #
-# There is deliberately no expiry on either the highlight or the alert. Both are
-# driven by the most recent substitution in the feed and stand until the next one
-# arrives: the trader may be mid-entry in the other system when a sub lands, and a
-# highlight that had timed out by the time they looked up would be worse than none.
-FLOOR_RECENT_SUBS = 2
-SUB_ALERT_MAX = 6
+# There is deliberately no expiry on the highlight: it is driven by the most recent
+# substitution in the feed and stands until the next one arrives. The trader may be
+# mid-entry in the other system when a sub lands, and a highlight that had timed out
+# by the time they looked up would be worse than none.
+FLOOR_RECENT_SUBS = 3
+SUB_HIGHLIGHT_MAX = 6
 
 # Timeframe table ordering. "chronological" -> 12:00-11:01 first (matches the
 # written spec). "reverse" -> 1:00-0:00 first (matches the mock-up sheet).
@@ -237,7 +238,7 @@ CSS = """
    One panel per team, five rows each, full names at 14px: this is read at a
    glance from a distance while subbing players by hand in another system, so
    legibility beats compactness. Orange stays reserved for "this changed
-   recently", matching .kp.hot and the alert box. */
+   recently", matching .kp.hot. */
 .lu {
   border: 1px solid var(--secondary-background-color); border-radius: 10px;
   overflow: hidden; margin: 2px 0 4px 0;
@@ -257,27 +258,30 @@ CSS = """
 /* After the striping, so an entering player wins on equal specificity. */
 .lurow.in { background: rgba(255,153,0,0.14); border-left-color: #ff9900; }
 .lurow.in .cl { color: #ffbe55; opacity: 1; }
-.floorout { font-size: 12px; color: var(--text-color); opacity: .65; margin: 4px 0 2px 0; }
-.floorout .nm { font-weight: 700; opacity: .9; }
 
-/* --- substitution alert (full width, persistent) -------------------------
-   Persistent on purpose: it is not a flash like .alert, it stands until the
-   feed publishes the next substitution, because the trader may be mid-entry in
-   another system when it lands. */
-.subalert {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-  font-size: 14px; font-weight: 700; padding: 9px 14px; border-radius: 8px;
-  margin: 6px 0 2px 0;
-  background-color: #3a1600; color: #ffd966; border: 2px solid #ff9900;
+/* --- recent substitutions (under each team's own five) -------------------
+   Under the team panel rather than in a full-width banner: the trader works one
+   team at a time while subbing by hand, so the change belongs next to that
+   team's list, and a bar across the page was far more alarm than a routine
+   substitution deserves. Only the newest row is at full contrast, with the
+   incoming name in the same orange as the highlighted row above it; older rows
+   fade back so the eye lands on the newest one without any colour fill.
+   Persistent on purpose - no expiry, same as the highlight. */
+.subs { margin: 5px 0 10px 0; }
+.subhd {
+  font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-color); opacity: .45; margin: 0 0 2px 2px;
 }
-.subalert .tag {
-  font-size: 11px; font-weight: 800; letter-spacing: .08em;
-  padding: 2px 8px; border-radius: 10px; background: #ff9900; color: #000000;
+.subrow {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+  padding: 2px; font-size: 12px; color: var(--text-color); opacity: .5;
 }
-.subalert .tm { font-weight: 800; }
-.subalert .gt { opacity: .8; }
-.subalert .io { color: #ffffff; font-weight: 800; }
-.subalert .lb { font-size: 11px; font-weight: 800; letter-spacing: .06em; opacity: .7; }
+.subrow.last { opacity: 1; }
+.subrow .gt { min-width: 54px; font-weight: 700; opacity: .7; }
+.subrow .lb { font-size: 10px; font-weight: 800; letter-spacing: .06em; opacity: .55; }
+.subrow .io { font-weight: 700; }
+.subrow .io.out { opacity: .8; }
+.subrow.last .io.in { color: #ffbe55; }
 
 /* --- timeframe table -----------------------------------------------------
    Its own narrow table rather than `html_table`: two columns of short values do
@@ -1354,13 +1358,12 @@ class FloorEntry:
 @dataclass(frozen=True)
 class TeamFloor:
     on_floor: tuple[FloorEntry, ...]
-    recent_out: tuple[FloorEntry, ...]   # most recently substituted out first
     unverified: int                      # subs applied to a player we had on the bench
 
 
-def team_floor(events: Sequence[GameEvent], team_id: str, starters: Sequence[RosterPlayer],
-               recent_out: int = FLOOR_RECENT_SUBS) -> TeamFloor:
-    """Who is on the floor for one team right now, and who just came off.
+def team_floor(events: Sequence[GameEvent], team_id: str,
+               starters: Sequence[RosterPlayer]) -> TeamFloor:
+    """Who is on the floor for one team right now.
 
     Pure function of the event list, recomputed every poll like every other table
     in this tool - so it cannot drift out of step with the feed the way stored
@@ -1368,13 +1371,12 @@ def team_floor(events: Sequence[GameEvent], team_id: str, starters: Sequence[Ros
     counting on the next refresh.
     """
     if not starters:
-        return TeamFloor((), (), 0)
+        return TeamFloor((), 0)
 
     on: dict[str, FloorEntry] = {
         p.player_id: FloorEntry(p.player_id, p.name or p.player_id, 0, "")
         for p in starters[:5]
     }
-    went_off: list[FloorEntry] = []
     unverified = 0
 
     for ev in events:
@@ -1389,30 +1391,32 @@ def team_floor(events: Sequence[GameEvent], team_id: str, starters: Sequence[Ros
             # Never seen in the measured games. Counted and surfaced rather than
             # silently swallowed, because it means the five on screen are wrong.
             unverified += 1
-        went_off.append(
-            FloorEntry(ev.sub_out_id, ev.sub_out_name or ev.sub_out_id, ev.period, ev.clock_display)
-        )
         on[ev.sub_in_id] = FloorEntry(
             ev.sub_in_id, ev.sub_in_name or ev.sub_in_id, ev.period, ev.clock_display
         )
 
-    # Most recent first, one row per player, and never a player who has since
-    # come back on - "Off" has to mean off right now, not off at some point.
-    seen: set[str] = set()
-    recent: list[FloorEntry] = []
-    for entry in reversed(went_off):
-        if entry.player_id in on or entry.player_id in seen:
-            continue
-        seen.add(entry.player_id)
-        recent.append(entry)
-        if len(recent) >= recent_out:
-            break
+    return TeamFloor(tuple(on.values()), unverified)
 
-    return TeamFloor(tuple(on.values()), tuple(recent), unverified)
+
+def recent_team_subs(events: Sequence[GameEvent], team_id: str,
+                     limit: int = FLOOR_RECENT_SUBS) -> list[GameEvent]:
+    """One team's last `limit` substitutions, most recent first.
+
+    Substitution events rather than the players who went off, so each line can be
+    read as the pair it actually was ("X for Y"): the trader is copying that pair
+    into another system, and a bare list of names who left does not say who took
+    their place. Repeats are kept - a player subbed off twice in a quarter really
+    did leave twice, and collapsing that would misdate the more recent one.
+    """
+    subs = [
+        e for e in events
+        if e.kind == KIND_SUB and e.team_id == team_id and e.sub_in_id and e.sub_out_id
+    ]
+    return list(reversed(subs[-limit:]))
 
 
 def latest_substitutions(events: Sequence[GameEvent],
-                         limit: int = SUB_ALERT_MAX) -> list[GameEvent]:
+                         limit: int = SUB_HIGHLIGHT_MAX) -> list[GameEvent]:
     """The most recent substitution break, in feed order.
 
     A break rather than a single play: at a timeout the feed publishes five or six
@@ -2546,50 +2550,45 @@ def _lineup_row(entry: FloorEntry, jersey: str, entering: bool) -> str:
     )
 
 
-def render_sub_alerts(tg: TrackedGame) -> None:
-    """Full-width alert per team for the latest substitution break.
+def render_recent_subs(events: Sequence[GameEvent], team_id: str) -> None:
+    """One team's recent substitutions, newest first, under its own five.
 
-    One bar per team rather than per player: a timeout change is five or six
-    substitutions at the same clock, and six identical orange bars is noise. Each
-    bar carries the team, the game time, and every player in / player out pair.
+    The newest row is the one the highlight above refers to, so it is the only one
+    at full contrast. No team label and no `SUB` tag: it sits inside that team's
+    column, directly under that team's players, which says both already.
     """
-    subs = latest_substitutions(tg.events)
+    subs = recent_team_subs(events, team_id)
     if not subs:
         return
 
-    by_team: dict[str, list[GameEvent]] = {}
-    for ev in subs:
-        by_team.setdefault(ev.team_id, []).append(ev)
-
-    for team_id, evs in by_team.items():
-        first = evs[0]
-        when = f"{first.clock_display or DASH} {period_label(first.period)}"
-        pairs = '<span class="gt">|</span>'.join(
-            f'<span class="lb">IN</span> '
-            f'<span class="io">{html.escape(ev.sub_in_name or ev.sub_in_id)}</span> '
-            f'<span class="lb">OUT</span> '
-            f'<span class="io">{html.escape(ev.sub_out_name or ev.sub_out_id)}</span>'
-            for ev in evs
-        )
-        st.markdown(
-            '<div class="subalert"><span class="tag">SUB</span>'
-            f'<span class="tm">{html.escape(tg.abbr_for.get(team_id, ""))}</span>'
-            f'<span class="gt">{html.escape(when)}</span>{pairs}</div>',
-            unsafe_allow_html=True,
-        )
+    rows = "".join(
+        f'<div class="subrow{" last" if i == 0 else ""}">'
+        f'<span class="gt">{html.escape(ev.clock_display or DASH)} '
+        f'{html.escape(period_label(ev.period))}</span>'
+        f'<span class="io in">{html.escape(ev.sub_in_name or ev.sub_in_id)}</span>'
+        f'<span class="lb">for</span>'
+        f'<span class="io out">{html.escape(ev.sub_out_name or ev.sub_out_id)}</span>'
+        "</div>"
+        for i, ev in enumerate(subs)
+    )
+    st.markdown(
+        f'<div class="subs"><div class="subhd">Recent subs</div>{rows}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_floor_panel(tg: TrackedGame) -> None:
-    """The five on the floor per team, plus who just came off.
+    """The five on the floor per team, plus that team's recent substitutions.
 
     Sits at the very top of the Live tab, above the key-player flash alerts, so
     its position never moves: an alert appearing would otherwise push it down the
     screen, which is the one thing a panel meant to be glanced at cannot do.
     See `team_floor` for how the five are derived and how well that was measured.
 
-    The highlight and the substitution alert are driven by the same call to
-    `latest_substitutions`, so a highlighted row and the bar underneath can never
-    disagree about who just came on.
+    The row highlight comes from `latest_substitutions` (both teams, the whole
+    break) while the list underneath comes from `recent_team_subs` (this team,
+    longer history), so the highlighted row is always the top line of the list
+    below it and never contradicts it.
     """
     game = tg.game
     jersey_by_id = tg.jersey_by_id
@@ -2621,15 +2620,7 @@ def render_floor_panel(tg: TrackedGame) -> None:
                 )
             )
             st.markdown(f'<div class="lu">{rows}</div>', unsafe_allow_html=True)
-
-            if floor.recent_out:
-                bits = " &middot; ".join(
-                    f'<span class="nm">{html.escape(entry.name)}</span> '
-                    f'{html.escape(entry.clock_display or DASH)} '
-                    f'{html.escape(period_label(entry.period))}'
-                    for entry in floor.recent_out
-                )
-                st.markdown(f'<div class="floorout">Off: {bits}</div>', unsafe_allow_html=True)
+            render_recent_subs(tg.events, team.team_id)
 
             # Silent while the five are trustworthy, which is the normal case.
             # It speaks up only when they are not.
@@ -2641,10 +2632,6 @@ def render_floor_panel(tg: TrackedGame) -> None:
                 )
             elif "boxscore" not in source:
                 note(f"Lineup source: {source}")
-
-    # Full width, below the panels: an alert above them would push the five down
-    # the screen every time a substitution landed.
-    render_sub_alerts(tg)
 
 
 def render_live_tab(tg: TrackedGame) -> None:

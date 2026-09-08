@@ -430,20 +430,25 @@ Other things to know:
   distance while players are being subbed by hand in another system, so
   legibility beats compactness. Rows are in shirt-number order, so the same team
   reads the same way twice and only the highlight moves.
-- **The highlight and the substitution alert never expire and never disagree.**
-  Both come from one call to `latest_substitutions`, which returns the most recent
-  substitution *break* — every substitution sharing the last one's period and
-  clock, because a timeout change is five or six plays at the same clock reading
-  and showing one of them would hide the rest. The entering players' rows are
-  highlighted orange and a full-width bar per team states the team, the game time,
-  and each player in / player out pair. Nothing times out: it stands until the feed
+- **The entering player's row is highlighted, and the highlight never expires.**
+  It comes from `latest_substitutions`, which returns the most recent substitution
+  *break* — every substitution sharing the last one's period and clock, because a
+  timeout change is five or six plays at the same clock reading and showing one of
+  them would hide the rest. Nothing times out: the highlight stands until the feed
   publishes the next substitution, because the trader may be mid-entry elsewhere
-  when it lands. `SUB_ALERT_MAX = 6` caps the pairs in one break;
-  `FLOOR_RECENT_SUBS = 2` sets how many substituted-off players the `Off:` line
-  lists.
-- The alert renders **below** the two panels. Above them, every substitution would
-  push the five down the screen — the one thing a panel meant to be glanced at
-  cannot do.
+  when it lands. `SUB_HIGHLIGHT_MAX = 6` caps one break.
+- **Recent substitutions are listed under each team's own five**, newest first, as
+  `<clock> <period> · <in> for <out>` — pairs, not a list of who left, because the
+  pair is what gets copied into the other system. `FLOOR_RECENT_SUBS = 3` sets the
+  count, enough to cover a whole timeout change for one team. Only the newest row
+  is at full contrast, and it is by construction the substitution the highlight
+  above refers to, so the two cannot contradict each other. There was previously a
+  full-width orange alert bar here instead; it was more alarm than a routine
+  substitution deserves, and a per-team list also puts the change next to the team
+  it belongs to. Orange is now only the incoming name on the newest row.
+- Both live **inside the team column, below the five** — never above. Above them,
+  every substitution would push the five down the screen, the one thing a panel
+  meant to be glanced at cannot do.
 - **Unverified against a live feed.** Everything above is measured on completed
   games. If a live `summary` response returns only a trailing window of plays
   rather than the whole history, the five would have to be accumulated across
