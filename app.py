@@ -350,6 +350,9 @@ CSS = """
 .kp .ln { font-size: 13px; color: var(--text-color); opacity: .85; margin-top: 2px; }
 .kp .ln.none { opacity: .45; }
 .kp.hot { border-color: #ff9900; background: rgba(255,153,0,0.12); }
+/* The expanded make list is built into the card's own HTML, so the .hot frame
+   encloses the baskets it is flashing about. */
+.kp .feed { margin-top: 5px; }
 
 /* --- tab strip -----------------------------------------------------------
    Cosmetic only - makes the keyed radio in `render_tab_strip` read as a tab
@@ -385,6 +388,16 @@ CSS = """
   padding: 2px 12px; min-height: 0; font-size: 12px; font-weight: 700;
 }
 .st-key-edit_kp button p { font-size: 12px; margin: 0; }
+
+/* The per-card "All N" / "Hide" toggle on a key player. Its key carries the
+   player id, so the wrapper class is matched on the prefix rather than in full.
+   Pulled up snug against the card above and right-aligned, so it reads as that
+   card's own footer and not as a control floating between two cards. */
+div[class*="st-key-kpall_"] { margin: -5px 0 9px 0; display: flex; justify-content: flex-end; }
+div[class*="st-key-kpall_"] button {
+  padding: 1px 10px; min-height: 0; font-size: 11px; font-weight: 700; opacity: .75;
+}
+div[class*="st-key-kpall_"] button p { font-size: 11px; margin: 0; }
 </style>
 """
 
@@ -1344,6 +1357,21 @@ def recent_fg_market_events(events: Sequence[GameEvent], abbr_for: dict[str, str
     return list(reversed(rows[-count:]))
 
 
+def player_market_events(events: Sequence[GameEvent], abbr_for: dict[str, str],
+                         player_id: str) -> list[FGMarketEvent]:
+    """Every made field goal by one player, newest first, with the market each
+    settled. Unbounded on purpose - it is behind a per-card toggle, and the whole
+    point is to see the lot.
+
+    Same derive-then-filter order as `recent_fg_market_events`, for the same
+    reason: anchors move on the opponent's baskets as well.
+    """
+    return list(reversed([
+        r for r in fg_market_events(events, abbr_for)
+        if r.made and r.event.player_id == player_id
+    ]))
+
+
 def latest_made_fg(events: Sequence[GameEvent], player_id: str) -> GameEvent | None:
     for ev in reversed(events):
         if ev.kind == KIND_FG and ev.made and ev.player_id == player_id:
@@ -1885,6 +1913,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "tracking": False,
     "active_tab": TAB_PREMATCH,
     "show_key_editor": False,  # UI only, like active_tab: never cleared, never saved
+    "kp_open": {},             # player id -> make list expanded; UI only, same rules
     "rate_limit_skip_remaining": 0,
     "key_players": {"away": [], "home": []},
     "kp_active": set(),
@@ -2102,38 +2131,24 @@ def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None) -> No
     )
 
 
-def format_event_line(ev: GameEvent, away_abbr: str, home_abbr: str,
-                      team_abbr: str, include_team: bool = True) -> str:
-    """'PHX Made 3 - 2:34 1Q - PHX 42, NYK 38'."""
-    result = f"{'Made' if ev.made else 'Missed'} {ev.points}"
-    prefix = f"{team_abbr} " if include_team and team_abbr else ""
-    clock = ev.clock_display or DASH
-    score = f"{away_abbr} {ev.away_score}, {home_abbr} {ev.home_score}"
-    return f"{prefix}{result} — {clock} {period_label(ev.period)} — {score}"
-
-
 def _anchor_text(score: tuple[int, int]) -> str:
     """'2-0'. Away first, home second, matching the market name."""
     return f"{score[0]}-{score[1]}"
 
 
-def render_feed(rows: Sequence[FGMarketEvent], empty_text: str,
-                include_team: bool = False) -> None:
-    """Field-goal attempts against the market each was priced under.
+def feed_html(rows: Sequence[FGMarketEvent], include_team: bool = False) -> str:
+    """Markup only, so a caller already assembling a block of HTML can embed the
+    same three columns. The key player card needs this: a second `st.markdown`
+    would land in its own container outside the card's box, and the `.hot` flash
+    would then frame the name but not the baskets it is flashing about.
 
     Three columns under one header - After, Result, Time - rather than repeating
-    "After" and the team on every line. `include_team` is for the combined panel
-    only; inside a team's own panel the abbreviation is the same on every row.
+    "After" and the team on every line. `include_team` is for a panel that mixes
+    teams; inside one team's own panel the abbreviation is the same on every row.
 
     The score a make opens the next market on is held in `new_market_anchor_score`
     and deliberately NOT rendered: it is the same number as the next row's anchor.
     """
-    if not rows:
-        st.markdown(
-            f'<div class="frow empty">{html.escape(empty_text)}</div>', unsafe_allow_html=True
-        )
-        return
-
     parts = [
         '<div class="fhead"><span>After</span><span>Result</span>'
         '<span class="sc">Time</span></div>'
@@ -2151,7 +2166,70 @@ def render_feed(rows: Sequence[FGMarketEvent], empty_text: str,
             f'{html.escape(period_label(ev.period))}</span>'
             "</div>"
         )
-    st.markdown(f'<div class="feed">{"".join(parts)}</div>', unsafe_allow_html=True)
+    return f'<div class="feed">{"".join(parts)}</div>'
+
+
+def render_feed(rows: Sequence[FGMarketEvent], empty_text: str,
+                include_team: bool = False) -> None:
+    """`feed_html` as its own element, with the empty state the panels need."""
+    if not rows:
+        st.markdown(
+            f'<div class="frow empty">{html.escape(empty_text)}</div>', unsafe_allow_html=True
+        )
+        return
+    st.markdown(feed_html(rows, include_team), unsafe_allow_html=True)
+
+
+def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
+    """One key player: their latest made field goal, expandable to all of them.
+
+    Closed and open are the same table, one row or all of them, so nothing has to
+    be read twice and there is one vocabulary on the tab. That replaced a summary
+    line carrying the live scoreboard, which would have contradicted row one of the
+    list it expanded into: the board after a basket is not the checkpoint the
+    basket settled, and the two differ whenever a free throw fell between them.
+
+    Two things this is careful about, both so the flash alert keeps working:
+
+    * **The list is inside the card**, built with `feed_html` into the same div, so
+      `.kp.hot` frames the baskets and not just the name.
+    * **The open/closed state lives in `session_state.kp_open`, not in a widget.**
+      The page reruns every REFRESH_SECONDS, and an `st.expander` whose label
+      carries live data is a new element each time it changes, so it would snap
+      shut on the next poll - the bug the NFL tool's Drives tab has.
+
+    The card is written into an `st.empty()` placeholder claimed *before* the
+    button, so the card appears above it but is rendered after the click has been
+    read. That keeps a toggle to a single rerun: no `st.rerun()`, no second pass
+    over the alert bookkeeping.
+    """
+    makes = player_market_events(tg.events, tg.abbr_for, player_id)
+    hot = any(a["player_id"] == player_id for a in st.session_state.kp_alerts)
+    card = st.empty()
+
+    is_open = False
+    # No control until there is something the closed card is not already showing.
+    if len(makes) > 1:
+        was_open = bool(st.session_state.kp_open.get(player_id))
+        if st.button(
+            "Hide" if was_open else f"All {len(makes)}",
+            key=f"kpall_{player_id}",
+            type="secondary",
+            help="Every made field goal by this player, with the market it settled",
+        ):
+            st.session_state.kp_open[player_id] = not was_open
+        is_open = bool(st.session_state.kp_open.get(player_id))
+
+    if makes:
+        body = feed_html(makes if is_open else makes[:1])
+    else:
+        body = '<div class="ln none">No made field goal yet</div>'
+
+    card.markdown(
+        f'<div class="{"kp hot" if hot else "kp"}">'
+        f'<div class="nm">{html.escape(display)}</div>{body}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def active_correction_alert() -> dict | None:
@@ -2844,21 +2922,8 @@ def render_live_tab(tg: TrackedGame) -> None:
         with col:
             subsect(team.display_name)
             for pid in st.session_state.key_players.get(side) or []:
-                display = name_by_id.get(pid) or _name_of(pid, tg.events) or pid
-                latest = latest_made_fg(tg.events, pid)
-                hot = any(a["player_id"] == pid for a in st.session_state.kp_alerts)
-                if latest:
-                    line = format_event_line(
-                        latest, away.abbr, home.abbr, team.abbr, include_team=False
-                    )
-                    cls = "kp hot" if hot else "kp"
-                    body = f'<div class="ln">{html.escape(line)}</div>'
-                else:
-                    cls = "kp"
-                    body = '<div class="ln none">No made field goal yet</div>'
-                st.markdown(
-                    f'<div class="{cls}"><div class="nm">{html.escape(display)}</div>{body}</div>',
-                    unsafe_allow_html=True,
+                key_player_card(
+                    tg, pid, name_by_id.get(pid) or _name_of(pid, tg.events) or pid
                 )
 
     # --- 2. three most recent FG attempts per team + made-shots feed -------

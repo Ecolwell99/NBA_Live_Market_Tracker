@@ -574,5 +574,42 @@ attempt: `market_anchor_score`, `event_result`, `post_event_score`, and
   previous made row's post score), 0 makes without a new checkpoint, 0 misses with
   one, and the final checkpoint equals both the last made field goal's board and
   the official final score.
-- **Deliberately unchanged:** the Key Player Tracker line and the first-shot tables
-  still show the plain board, because they are not market names.
+- **The first-shot tables still show the plain board**, because they are not market
+  names. The Key Player Tracker no longer does — see 4.9.
+
+### 4.9 Key player cards, and the expand toggle
+
+Each key player card shows the After / Result / Time table from 4.8: one row closed,
+all of that player's made field goals when expanded. `player_market_events` filters
+`fg_market_events` by `player_id`, so the anchors are still derived over the whole
+game before filtering.
+
+- **Closed and open are the same table**, one row or all of them. The card used to
+  carry a summary line with the live scoreboard (`format_event_line`, now deleted —
+  it had no other caller). That would have contradicted row one of the list it
+  expands into: the board after a basket is not the checkpoint the basket settled,
+  and the two differ by however many free throws fell between them. Showing both was
+  a way to make a trader distrust the panel.
+- **The toggle cannot disturb the flash alert**, which was the requirement:
+  - alert *creation* is idempotent — it fires only when `kp_seen[pid]` differs from
+    the newest make's event id, and writes the id as it fires, so a rerun from a
+    click finds nothing new;
+  - alert *expiry* is wall-clock (`now - alert["ts"] <= KEY_ALERT_SECONDS`), not a
+    tick count, so extra reruns neither shorten nor extend the 30s;
+  - a click makes no request — `fetch_summary` is cached at `REFRESH_SECONDS - 1`, so
+    the rerun sees identical events and `record_corrections` diffs against an
+    already-current snapshot.
+- **The list is built into the card's own HTML** with `feed_html` rather than a second
+  `st.markdown`, so `.kp.hot` frames the baskets it is flashing about and not just
+  the name.
+- **Open state lives in `session_state.kp_open`, not in the widget.** An `st.expander`
+  would have been the obvious control and the wrong one: Streamlit identifies it by
+  label and position, so a label carrying live data (`Wembanyama — 7 made`) is a new
+  element on every basket and snaps shut. That is the open bug on the NFL tool's
+  Drives tab. Holding the state ourselves also means the 15s autorefresh can't close
+  it.
+- **One rerun per click.** The card is written into an `st.empty()` placeholder
+  claimed before the button, so it renders *below* the button in code but *above* it
+  on screen — and therefore after the click has been read. No `st.rerun()`.
+- The button is hidden until a player has more than one make, since a one-row list is
+  what the closed card already shows.
