@@ -621,34 +621,51 @@ all of that player's made field goals when expanded.
   element on every basket and snaps shut. That is the open bug on the NFL tool's
   Drives tab. Holding the state ourselves also means the 15s autorefresh can't close
   it.
-- **The button sits on the card's own title line, top right, and is overlaid there by
-  CSS.** A Streamlit widget cannot be nested inside a block of our own HTML, so it is
-  emitted immediately *before* the card and then pulled back over it by
-  `div[class*="st-key-kpall_"]`.
-  - **It is placed by `position: absolute` against the wrapper, not by aligning it
-    inside one.** The first attempt used `display: flex; justify-content: flex-end` on
-    the wrapper and **landed the button on top of the player's name**: flex alignment
-    moves the wrapper's *child div*, and Streamlit keeps that div full width, so the
-    button inside it never left the left edge. Absolute positioning resolves against
-    the nearest positioned ancestor — the wrapper — so no width or extra nesting level
-    Streamlit puts in between can defeat it. `right: 14px` / `top: 9px` are the card's
-    own 2px border + 8px padding, so the button's edges meet the card's inner edges.
-  - `margin-bottom: -36px` cancels the button out of the flow — its own 20px height
-    plus the one extra 1rem `stVerticalBlock` gap that inserting an element costs
-    (Streamlit's flex gap does not collapse with margins). Without it, a player with
-    the toggle would sit lower than a player without one. **This is the only value
-    inferred from Streamlit's own layout, so it is the one to change if the button
-    ever appears clear above or below the card rather than on its title line.**
-  - Verified in a headless-Chrome mock against **three** wrapper shapes —
-    `wrapper > .stButton > button`, an extra full-width div in between, and a flex
-    intermediate: all three give inset 14px, top 9px, button centred on the name line
-    to 0px, fully inside the card box, with the flow around it unchanged (21px below
-    the heading, 22px between cards). The same mock reproduces the flex version's
-    failure for the record: the button lands 294px from the card's right edge, over
-    the name.
-  - `.kp .nm` still reserves 66px on the right so a long name wraps rather than
-    running under the button, and `pointer-events` is off on the full-width wrapper so
-    it cannot swallow clicks on the name.
+- **The card's box is `st.container(border=True)`, not a div of ours, and that is the
+  whole reason the toggle can sit in the top right corner.** A Streamlit widget cannot
+  be nested inside a block of our own HTML, so with a `.kp` div the button had to be
+  overlaid onto the card by CSS. That was tried twice and failed twice in the real app
+  while passing in a hand-built mock of Streamlit's DOM — the lesson being that **there
+  is no Python on this machine, the app cannot be run here, and a mock of Streamlit's
+  wrapper chain is not evidence about Streamlit's wrapper chain:**
+  - `display: flex; justify-content: flex-end` on the wrapper → **button on top of the
+    player's name.** Flex alignment moves the wrapper's *child div*, and Streamlit keeps
+    that div full width, so the button inside it never left the left edge.
+  - `position: absolute; top: 9px; right: 14px` on the button → **button still at the
+    left, shrink-wrapped to almost nothing** ("a weird box circle"), so `right` was not
+    resolving against the wrapper at all.
+  - Both also needed a `-36px` bottom margin to cancel the button out of the flow. That
+    number was never confirmed either.
+
+  So the box is Streamlit's, the title row is `st.columns([4, 1], gap="small",
+  vertical_alignment="center")` — name left, button right — and **the positioning is
+  Streamlit's job, which CSS can no longer get wrong.** The only cosmetic guess left is
+  `float: right` on the button, and it is a harmless one: ignored (an intervening flex
+  parent will ignore it), the button sits at the left of its own narrow column, a few
+  pixels off the corner rather than in the wrong place.
+- **The flash alert moved off the card's border, because we no longer own the border.**
+  It is painted on the two parts of the card that are still ours — the name
+  (`.kpnm.hot`, orange text) and every shot row (`.kpbody.hot .frow`, orange tint) — so
+  the requirement that it frame the baskets and not just the name still holds. An
+  orange frame on the container itself is layered on top as a **best effort only**:
+  ```css
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
+    :has(div[data-testid="stVerticalBlockBorderWrapper"] .kpbody))
+  ```
+  Streamlit wraps every vertical block in one of those, so the card's own wrapper has to
+  be picked out of a nest: it holds a flashing name **and** the shot list (which rules
+  out the title row's name column, holding the name but no list) and has no wrapper
+  below it holding a shot list (which rules out the enclosing column and the page
+  block). `:has()` cannot be nested inside `:has()`, hence the guard matching on
+  `.kpbody` alone. Verified in headless Chrome against two nestings — title columns
+  border-wrapped and not — that the orange lands on the hot card's wrapper only, and
+  never on the page block, the column, the name column or a cold card. If `:has()` is
+  unsupported or a testid changes the rule is simply dropped, and the name and rows
+  still flash.
+- `.kpbody { margin-top: -10px }` pulls the shot list up under the title row, because
+  Streamlit's 1rem block gap is too much air between a name and the table belonging to
+  it. It is a margin rather than a gap override on purpose: if that gap ever changes,
+  this only gets tighter or looser, it cannot break.
 - **The toggle flips through an `on_click` callback (`toggle_kp_open`), not an
   `if st.button(...)` body.** A button's label is an *argument* to the widget, so it is
   fixed before the click can be handled: reading the state inline rendered the run in

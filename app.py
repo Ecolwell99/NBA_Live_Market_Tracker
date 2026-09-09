@@ -341,25 +341,49 @@ CSS = """
 .tf tr.cur td { background: rgba(255,153,0,0.10); font-weight: 800; }
 .tf tr.cur td:first-child { border-left-color: #ff9900; }
 
-/* --- key player card --- */
-.kp {
-  background: rgba(128,128,128,0.06); border: 2px solid transparent;
-  border-radius: 8px; padding: 8px 12px; margin-bottom: 6px;
+/* --- key player card ------------------------------------------------------
+   The card's box is Streamlit's own `st.container(border=True)`, not a div of ours.
+   That is deliberate and it is the whole reason the All/Hide button can sit in the
+   top right corner: a widget cannot go inside our HTML, so the box has to be
+   something Streamlit itself can put a widget into. Two overlay attempts at faking
+   it are recorded above `.st-key-kpall_`.
+
+   The consequence is that the flash alert cannot be a border on our own div any
+   more, so it is painted on the parts of the card we DO own - the name and the shot
+   rows - and the container frame is a best-effort bonus on top. Nothing about the
+   flash depends on that bonus rule matching. */
+.kpnm { font-size: 13px; font-weight: 700; color: var(--text-color); line-height: 18px; }
+.kpnm.hot { color: #ff9900; }
+.kpnone { font-size: 13px; color: var(--text-color); opacity: .45; }
+/* Pulls the shot list up under the title row: Streamlit's 1rem block gap is too much
+   air between a name and the table that belongs to it. A margin, so if the gap ever
+   changes this only gets tighter or looser, never broken. */
+.kpbody { margin-top: -10px; }
+.kpbody.hot .frow { background: rgba(255,153,0,0.14); }
+.kpbody.hot .fhead { opacity: .6; }
+
+/* Best effort, and only that: paint the flash on the container itself so it frames
+   the whole card the way the old `.kp.hot` border did. Three clauses, each earning
+   its place, because Streamlit wraps every vertical block in one of these and the
+   card's own wrapper has to be picked out of a nest of them:
+
+   * `:has(.kpnm.hot)`  - contains a flashing player name;
+   * `:has(.kpbody)`    - and the shot list too, which rules out the title row's own
+                          name column: that column holds the name but not the list;
+   * `:not(:has(<wrapper> .kpbody))` - and has no wrapper below it holding a shot
+                          list, which rules out the enclosing column and the page
+                          block. `:has()` cannot be nested inside `:has()`, so the
+                          guard matches on `.kpbody` alone rather than repeating the
+                          pair.
+
+   If `:has()` is unsupported, or a testid changes, or the nesting turns out to be
+   something else entirely, the rule is simply dropped: `.kpnm.hot` and `.kpbody.hot`
+   above still flash the name and every shot row, so the alert never depends on this
+   selector being right. */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
+  :has(div[data-testid="stVerticalBlockBorderWrapper"] .kpbody)) {
+  border-color: #ff9900 !important; background: rgba(255,153,0,0.10);
 }
-/* The title line's height is fixed, not left to the font, because the All/Hide
-   button is overlaid on it by a negative margin (see .st-key-kpall_ below) and
-   the two have to agree. The right padding is the button's landing strip: a long
-   name wraps to a second line rather than running underneath it. */
-.kp .nm {
-  font-size: 13px; font-weight: 700; color: var(--text-color);
-  line-height: 18px; padding-right: 66px;
-}
-.kp .ln { font-size: 13px; color: var(--text-color); opacity: .85; margin-top: 2px; }
-.kp .ln.none { opacity: .45; }
-.kp.hot { border-color: #ff9900; background: rgba(255,153,0,0.12); }
-/* The expanded make list is built into the card's own HTML, so the .hot frame
-   encloses the baskets it is flashing about. */
-.kp .feed { margin-top: 5px; }
 
 /* --- tab strip -----------------------------------------------------------
    Cosmetic only - makes the keyed radio in `render_tab_strip` read as a tab
@@ -396,43 +420,33 @@ CSS = """
 }
 .st-key-edit_kp button p { font-size: 12px; margin: 0; }
 
-/* The per-card "All N" / "Hide" toggle on a key player, sitting on the top right
-   of that player's own box. Its key carries the player id, so the wrapper class is
-   matched on the prefix rather than in full.
+/* The per-card "All N" / "Hide" toggle on a key player. Its key carries the player
+   id, so the wrapper class is matched on the prefix rather than in full.
 
-   A Streamlit widget cannot be nested inside a block of our own HTML, so the button
-   is rendered immediately BEFORE its card and then lifted back over it.
+   **Nothing here positions the button.** It is in the narrow right-hand column of the
+   card's title row, so Streamlit's own layout puts it in the corner and this rule only
+   makes it small. Two attempts to overlay a button onto a div of ours failed in the
+   real app while passing in a hand-built mock of Streamlit's DOM, which is the lesson:
+   there is no Python on this machine, so the app cannot be run here, and a mock of
+   Streamlit's wrapper chain is not evidence about Streamlit's wrapper chain.
 
-   The button is placed by `position: absolute` against the wrapper, NOT by aligning
-   it inside one. Flex alignment on the wrapper was the first attempt and it put the
-   button on top of the player's name: `justify-content: flex-end` moves the
-   wrapper's child div, and Streamlit keeps that div full width, so the button
-   inside it stayed at the left edge. Absolute positioning resolves against the
-   nearest positioned ancestor, which is the wrapper, so it cannot be defeated by
-   the width or the depth of whatever Streamlit puts in between.
+   1. `display: flex; justify-content: flex-end` on the wrapper put the button on top
+      of the player's name: flex alignment moves the wrapper's child div, and Streamlit
+      keeps that div full width, so the button inside it never left the left edge.
+   2. `position: absolute; right: 14px` left it at the left as well, shrink-wrapped to
+      almost nothing ("a weird box circle"), so `right` was not resolving against the
+      wrapper at all.
 
-   * `right: 14px` / `top: 9px` are the card's own 2px border + 8px padding, so the
-     button's edges meet the card's inner edges (the 9px is 10px less half the 2px
-     by which the 20px button overhangs the 18px name line).
-   * `margin-bottom: -36px` cancels the button out of the flow, so the card lands
-     where it would sit if the button were not there at all - otherwise a player
-     with a toggle would sit lower than a player without one. Inserting the wrapper
-     costs its own 20px height plus ONE extra Streamlit flex `gap` (1rem, which does
-     not collapse with margins): 20 + 16 = 36. **This is the only value here
-     inferred from Streamlit's own layout, so if the button sits clear above or
-     below the card rather than on its title line, it is the one to change.**
-
-   `pointer-events` is off on the full-width wrapper and back on for the button, or
-   an invisible strip would sit across the player's name. */
-div[class*="st-key-kpall_"] {
-  position: relative; height: 20px; margin: 0 0 -36px 0;
-  overflow: visible; z-index: 2; pointer-events: none;
-}
+   `float: right` below is the one cosmetic guess that remains, and it is deliberately
+   a harmless one: if it is ignored (an intervening flex parent will ignore it) the
+   button sits at the left of its own narrow column, which is a few pixels off the
+   corner rather than in the wrong place. `white-space: nowrap` keeps "All 12" on one
+   line in that narrow column. */
+div[class*="st-key-kpall_"] { text-align: right; }
 div[class*="st-key-kpall_"] button {
-  position: absolute; top: 9px; right: 14px;
-  height: 20px; min-height: 0; padding: 0 9px; line-height: 18px;
-  font-size: 11px; font-weight: 700; opacity: .7;
-  white-space: nowrap; pointer-events: auto;
+  float: right; white-space: nowrap;
+  min-height: 0; padding: 1px 10px; line-height: 18px;
+  font-size: 11px; font-weight: 700; opacity: .75;
 }
 div[class*="st-key-kpall_"] button:hover { opacity: 1; }
 div[class*="st-key-kpall_"] button p { font-size: 11px; line-height: 18px; margin: 0; }
@@ -2273,18 +2287,29 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
 
     Two things this is careful about, both so the flash alert keeps working:
 
-    * **The list is inside the card**, built with `feed_html` into the same div, so
-      `.kp.hot` frames the baskets and not just the name.
+    * **The list is inside the card**, so the flash covers the baskets and not just
+      the name - now by tinting the rows (`.kpbody.hot`) rather than by framing them.
     * **The open/closed state lives in `session_state.kp_open`, not in a widget.**
       The page reruns every REFRESH_SECONDS, and an `st.expander` whose label
       carries live data is a new element each time it changes, so it would snap
       shut on the next poll - the bug the NFL tool's Drives tab has.
 
-    The button is emitted *before* the card and then pulled down onto the card's
-    title line by CSS, because a Streamlit widget cannot be nested inside our own
-    HTML. It toggles through `toggle_kp_open` as an `on_click` callback, which is
-    what makes the label and the list agree in the same run, and it keeps a click to
-    a single rerun: no `st.rerun()`, no second pass over the alert bookkeeping.
+    **The box is `st.container(border=True)`, not a div of ours, and that is what puts
+    the toggle in the corner.** A Streamlit widget cannot be nested inside our own
+    HTML, so two attempts to overlay a button onto a `.kp` div were made and both
+    landed it on top of the player's name instead (recorded in the CSS). Giving the box
+    to Streamlit means the title row can be two real columns - name left, button right -
+    so the layout is Streamlit's job and cannot be got wrong by CSS.
+
+    The price is that the flash alert can no longer be a border on our own div. It is
+    painted instead on the two parts of the card we still own, the name (`.kpnm.hot`)
+    and the shot rows (`.kpbody.hot`), with an orange container frame as a best-effort
+    extra. The requirement that the flash frame the baskets and not just the name is
+    still met, and it no longer depends on a selector that might not match.
+
+    The button toggles through `toggle_kp_open` as an `on_click` callback, which is what
+    makes the label and the list agree in the same run, and keeps a click to a single
+    rerun: no `st.rerun()`, no second pass over the alert bookkeeping.
 
     No `help=` on the button, deliberately. Streamlit's tooltip is positioned on
     hover and does not always tear down when the page reruns underneath it - on a
@@ -2292,30 +2317,39 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
     """
     makes = player_market_events(tg.events, tg.abbr_for, player_id)
     hot = any(a["player_id"] == player_id for a in st.session_state.kp_alerts)
-
-    # Read AFTER the on_click callback below has run, so the label and the list it
-    # controls always agree - see the docstring.
+    # Read AFTER any on_click callback has run, so the label below and the list it
+    # controls always agree - see `toggle_kp_open`.
     is_open = bool(st.session_state.kp_open.get(player_id))
-    # No control until there is something the closed card is not already showing.
-    if len(makes) > 1:
-        st.button(
-            "Hide" if is_open else f"All {len(makes)}",
-            key=f"kpall_{player_id}",
-            type="secondary",
-            on_click=toggle_kp_open,
-            args=(player_id,),
+
+    with st.container(border=True):
+        # 4:1 leaves the button's column wide enough for "All 12" at every window
+        # width the tool is used at, and narrow enough to read as a corner control.
+        name_col, btn_col = st.columns([4, 1], gap="small", vertical_alignment="center")
+        with name_col:
+            st.markdown(
+                f'<div class="kpnm{" hot" if hot else ""}">{html.escape(display)}</div>',
+                unsafe_allow_html=True,
+            )
+        with btn_col:
+            # No control until there is something the closed card is not already
+            # showing. The column stays, so the name column keeps its width either way.
+            if len(makes) > 1:
+                st.button(
+                    "Hide" if is_open else f"All {len(makes)}",
+                    key=f"kpall_{player_id}",
+                    type="secondary",
+                    on_click=toggle_kp_open,
+                    args=(player_id,),
+                )
+
+        if makes:
+            body = feed_html(makes if is_open else makes[:1])
+        else:
+            body = '<div class="kpnone">No made field goal yet</div>'
+        st.markdown(
+            f'<div class="kpbody{" hot" if hot else ""}">{body}</div>',
+            unsafe_allow_html=True,
         )
-
-    if makes:
-        body = feed_html(makes if is_open else makes[:1])
-    else:
-        body = '<div class="ln none">No made field goal yet</div>'
-
-    st.markdown(
-        f'<div class="{"kp hot" if hot else "kp"}">'
-        f'<div class="nm">{html.escape(display)}</div>{body}</div>',
-        unsafe_allow_html=True,
-    )
 
 
 def active_correction_alert() -> dict | None:
