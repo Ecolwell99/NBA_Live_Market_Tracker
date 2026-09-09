@@ -84,6 +84,14 @@ KEY_ALERT_SECONDS = 30
 # Key players tracked per team.
 KEY_PLAYERS_PER_TEAM = 2
 
+# Team logo size in the game header (px). 20 was chosen by rendering 16 / 20 / 26
+# against the real header colour: ESPN pads each logo differently inside its
+# 500x500 canvas - the mark is 92% of the canvas for Brooklyn and Golden State but
+# only 56% tall for the Lakers - so a 16px box gives a wordmark logo about 9px of
+# height and it turns to mush. 20 is the smallest size every team stays legible at
+# without disturbing the 16px name / 34px score row it sits in.
+LOGO_PX = 20
+
 # On-floor panel (top of the Live tab). How many recent substitutions to list under
 # each team's five, and how many pairs of one simultaneous change can highlight at
 # once (a timeout change is five or six substitutions at the same clock reading).
@@ -205,6 +213,16 @@ CSS = """
 }
 .gh .tm { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 .gh .tm.h { justify-content: flex-end; }
+/* Team logo, outboard of the name so the two scores stay the innermost thing in the
+   block. The size is NOT set here - it comes from the tag's `width`/`height`, written
+   from `LOGO_PX`, so there is one place to change it and no chance of the CSS and the
+   attributes disagreeing. What is set here is what the attributes cannot do:
+   `flex: 0 0 auto`, because a flex item whose intrinsic width is 500px would otherwise
+   be sized by the flex algorithm rather than by its attributes, and `object-fit` in
+   case a future logo is not square. No background and no border-radius: the source
+   PNGs are RGBA with fully transparent corners (measured), so they composite straight
+   onto the panel with nothing behind them. */
+.gh .lg { flex: 0 0 auto; object-fit: contain; }
 .gh .nm { font-size: 16px; font-weight: 800; }
 .gh .sc { font-size: 34px; font-weight: 900; line-height: 1; }
 .gh .mid { text-align: center; }
@@ -462,6 +480,19 @@ div[class*="st-key-kpall_"] button p { font-size: 11px; line-height: 18px; margi
 
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 
+# ESPN's image resizer, used for the team logos in the game header. The published
+# files are 500x500 and 38-98 KB each, which is ~200 KB of PNG to paint two 20px
+# icons; the combiner does the resize on their side and returns the same logo at
+# w=40 in 1,773 bytes, still colour type 6 with fully transparent corners.
+#
+# Measured, all on 2026-09-08, so none of this is assumed:
+#   * it accepts a FULL url in `img=`, not just a site-relative path - both forms
+#     return the byte-identical file - so nothing here has to take the feed's URL
+#     apart, which is what keeps this a one-line wrap rather than string surgery;
+#   * `a.espncdn.com` answers 200 from this network. That needed checking on its
+#     own: it is a different host from the API, and `cdn.nba.com` is 403 here.
+ESPN_IMG_COMBINER = "https://a.espncdn.com/combiner/i"
+
 # DO NOT put a browser User-Agent here. ESPN sits behind Akamai, which matches the
 # LEADING token of the UA against known HTTP-client signatures and serves 403 to
 # anything else - including a spoofed Chrome string. Measured 2026-09-06, stable
@@ -498,6 +529,13 @@ class TeamInfo:
     location: str
     name: str
     display_name: str
+    # Ready to drop into an <img src>, already sized - see `_logo_src`. Defaulted,
+    # and that default is load-bearing rather than tidiness: `TeamInfo(**g["away"])`
+    # rehydrates dicts that outlive an edit to this file. `session_state["games"]`
+    # holds them with no TTL at all, and `fetch_scoreboard`'s cache key does not
+    # change when a function it calls does, so on the reload that first shipped this
+    # field a required argument would have raised TypeError on the open game.
+    logo: str = ""
 
 
 @dataclass(frozen=True)
@@ -570,6 +608,45 @@ def _http_get_json(url: str) -> dict:
         raise DataSourceError("Feed returned a malformed (non-JSON) response.") from exc
 
 
+def _logo_src(raw: dict) -> str:
+    """A display-ready logo URL for one team object, or "" if it carries none.
+
+    **The two endpoints we call disagree about the shape**, so both are read here
+    rather than anywhere downstream (measured on `scoreboard?dates=20250101` and
+    `summary?event=401859966`):
+
+      * `scoreboard` -> `competitors[].team.logo`, a plain string, and no `logos`;
+      * `summary`    -> `header...competitors[].team.logos`, a list of
+                        `{href, rel}`, and no `logo` string at all.
+
+    The first `href` is taken and the `rel` tags are ignored, because **every variant
+    ESPN publishes for a team is the same picture**: `/500/`, `/500-dark/`,
+    `/500/scoreboard/` and `/500-dark/scoreboard/` are byte-identical (equal md5 on
+    the four paths; and a pixel diff of the light and dark files over five teams -
+    SA, BKN, NY, GS, LAL - found not one pixel different, identical bounding boxes,
+    identical mean luminance). The `rel: ["full","dark"]` tag advertises a dark-theme
+    variant that, for NBA, does not exist. Do not add logic to prefer one.
+
+    The URL is wrapped for size here, at the boundary, so `TeamInfo.logo` is neutral
+    to everything downstream: it is a URL for an image of the right size, and the
+    fact that ESPN is the one resizing it stops at this function.
+    """
+    href = raw.get("logo")
+    if not isinstance(href, str) or not href:
+        href = ""
+        for entry in raw.get("logos") or []:
+            if isinstance(entry, dict) and isinstance(entry.get("href"), str):
+                href = entry["href"]
+                if href:
+                    break
+    if not href:
+        return ""
+    # 2x, so it stays sharp on a high-DPI screen. `&` is escaped where the tag is
+    # built, not here, so this stays a URL rather than a fragment of HTML.
+    px = LOGO_PX * 2
+    return f"{ESPN_IMG_COMBINER}?img={href}&w={px}&h={px}"
+
+
 def _team_from_raw(raw: dict) -> TeamInfo:
     return TeamInfo(
         team_id=str(raw.get("id", "")),
@@ -577,6 +654,7 @@ def _team_from_raw(raw: dict) -> TeamInfo:
         location=raw.get("location", "") or "",
         name=raw.get("name", "") or "",
         display_name=raw.get("displayName") or raw.get("name") or "",
+        logo=_logo_src(raw),
     )
 
 
@@ -2401,24 +2479,50 @@ def status_line(message: str) -> None:
     )
 
 
+def _logo_tag(team: TeamInfo) -> str:
+    """`<img>` for one team's logo, or "" when the feed gave us no logo for them.
+
+    Empty rather than a placeholder box on purpose: the abbreviation and the score
+    are what the header is for, and a grey square where a logo failed would be more
+    distracting than the gap. `alt` is empty for the same reason - the name is right
+    next to it, so the logo is decoration and should not be read out twice.
+
+    `html.escape` is doing real work on the URL, not being defensive for its own
+    sake: `_logo_src` returns query parameters joined by `&`, which has to reach the
+    browser as `&amp;` inside an attribute.
+    """
+    if not team.logo:
+        return ""
+    return (
+        f'<img class="lg" src="{html.escape(team.logo, quote=True)}" '
+        f'width="{LOGO_PX}" height="{LOGO_PX}" alt="" loading="eager">'
+    )
+
+
 def game_header(game: GameInfo, clock_text: str, period_text: str, updated: str) -> None:
     """Teams, scores, period, clock and the last successful poll, in one block.
 
-    Scores sit inboard of the names so the eye lands on the two numbers together.
+    Scores sit inboard of the names so the eye lands on the two numbers together,
+    which puts each team's logo on the outside edge of its own half of the block.
+
+    The logos are free of extra traffic: they come from the same `summary` response
+    the tool already polls, so adding them cost a field, not a request.
     """
     period = (
         f'<span class="pd">{html.escape(period_text)}</span>' if period_text else ""
     )
     st.markdown(
         '<div class="gh">'
-        f'<div class="tm"><span class="nm">{html.escape(game.away.display_name)}</span>'
+        f'<div class="tm">{_logo_tag(game.away)}'
+        f'<span class="nm">{html.escape(game.away.display_name)}</span>'
         f'<span class="sc">{game.away_score}</span></div>'
         '<div class="mid">'
         f'<div class="ck">{html.escape(clock_text or DASH)}{period}</div>'
         f'<div class="up">Updated {html.escape(updated or DASH)}</div>'
         '</div>'
         f'<div class="tm h"><span class="sc">{game.home_score}</span>'
-        f'<span class="nm">{html.escape(game.home.display_name)}</span></div>'
+        f'<span class="nm">{html.escape(game.home.display_name)}</span>'
+        f'{_logo_tag(game.home)}</div>'
         '</div>',
         unsafe_allow_html=True,
     )

@@ -44,8 +44,8 @@ once the game is final). **Refresh now** in the sidebar forces a fetch.
 
 ### What sits above the tabs
 
-A **game header** — both teams, both scores, the period and clock, and the time of
-the last successful poll — then a **one-line status**. The big house banner
+A **game header** — each team's logo, both teams, both scores, the period and clock,
+and the time of the last successful poll — then a **one-line status**. The big house banner
 (`warning_box`, as in the NFL and NHL tools) is still there, but only for a state
 that wants attention: a live stat correction, a data delay, a feed warning or a
 rate-limit cooldown. `STATUS: OK` does not want attention, so it drops to
@@ -680,3 +680,66 @@ all of that player's made field goals when expanded.
   the label (`All 7` / `Hide`) says enough on its own.
 - The button is hidden until a player has more than one make, since a one-row list is
   what the closed card already shows.
+
+### 4.10 Team logos in the game header
+
+A 20px logo sits on the outboard edge of each team's half of the header block, so the
+two scores stay the innermost thing in it. Everything below was measured on
+2026-09-08, before any of it was written.
+
+- **They cost no extra request.** The logo URL is already in the two payloads the tool
+  polls, on the same team object it already reads for the abbreviation and the display
+  name. Adding them was a field at the provider boundary, not a fetch.
+- **The two endpoints disagree about the shape**, so `_logo_src` reads both:
+  `scoreboard` gives `competitors[].team.logo`, a plain string, and no `logos` key;
+  `summary` gives `header…competitors[].team.logos`, a list of `{href, rel}`, and no
+  `logo` string at all. Miss that and the manual-game-ID path silently loses its logos
+  while the scoreboard path keeps them.
+- **Every variant ESPN publishes for a team is the same picture, so the `rel` tags are
+  ignored and the first `href` wins.** `/500/`, `/500-dark/`, `/500/scoreboard/` and
+  `/500-dark/scoreboard/` are byte-identical (equal md5), and a per-pixel diff of the
+  light and dark files across SA, BKN, NY, GS and LAL found **not one differing pixel**
+  — identical bounding boxes, identical mean luminance. The `rel: ["full","dark"]` tag
+  advertises a dark-theme variant that, for NBA, does not exist. Don't add logic to
+  prefer one, and don't reach for `/500-dark/` because the theme is dark; it buys
+  nothing.
+- **No background behind them, because they don't need one.** All the files are 8-bit
+  RGBA (PNG colour type 6) with genuinely transparent corners: alpha 0 at all four,
+  minimum alpha 0, and 33–72% of pixels fully transparent (SA 72%, LAL 66%, NY 61%,
+  BKN 33%, GS 33%). They composite straight onto the panel, which is
+  `rgba(128,128,128,0.05)` over `#101318` ≈ `#16181D`.
+- **20px, not 16px, and the reason is ESPN's padding rather than taste.** Each mark is
+  inset differently inside its 500×500 canvas — 92% of the canvas for BKN and GS, 76%
+  wide for SA, but only **56% tall for LAL** — so a 16px box is not 16px of logo. It
+  gives a wordmark team about 9px of height, and rendered against the real header
+  colour at 16 / 20 / 26px, LAL and NY turned to mush at 16 while the simple shapes
+  (SA's spur, BKN's B) survived. 20 is the smallest size every team stays legible at.
+  26px read cleanly but would have disturbed the 16px name / 34px score row.
+- **The header did not get taller.** Measured with the real CSS in headless Chrome:
+  the block is 69.0px with logos and 69.0px without. `.tm` is `align-items: baseline`,
+  so a 20px image needs less ascent than the 34px score already does.
+- **The images are served at 2× through ESPN's resizer** (`ESPN_IMG_COMBINER`). The
+  published files are 500×500 and 38–98 KB each, so a pair of them is ~200 KB of PNG
+  to paint two 20px icons; `combiner/i?img=…&w=40&h=40` returns the same logo in
+  **1,773 bytes**, still colour type 6, corners still fully transparent. Two things
+  made this a one-line wrap rather than string surgery: the combiner accepts a **full
+  URL** in `img=`, not just a site-relative path (both forms return the byte-identical
+  file), and `a.espncdn.com` answers 200 from the office network — which had to be
+  checked separately, since it is a different host from the API and `cdn.nba.com` is
+  403 here.
+- **`TeamInfo.logo` is defaulted to `""` and that default is load-bearing.**
+  `TeamInfo(**g["away"])` rehydrates dicts that outlive an edit to `app.py`:
+  `session_state["games"]` holds them with no TTL, and `fetch_scoreboard`'s cache key
+  does not change when a function it calls does. A required argument would have raised
+  `TypeError` on the open game on the reload that first shipped the field.
+- **A team with no logo renders nothing, not a placeholder.** The name and score are
+  what the header is for, and a grey square where a logo failed would be worse than
+  the gap. `alt=""` for the same reason — the name is next to it, so the logo is
+  decoration and shouldn't be read out twice.
+- `html.escape` on the URL is doing real work rather than being defensive by habit:
+  `_logo_src` joins query parameters with `&`, which has to reach the browser as
+  `&amp;` inside an attribute.
+- The size lives in one place, `LOGO_PX` in SECTION 1, written into the tag's
+  `width`/`height`. The CSS deliberately sets **no** dimensions — only `flex: 0 0 auto`
+  (a flex item with an intrinsic 500px width would otherwise be sized by the flex
+  algorithm, not by its attributes) and `object-fit: contain`.
