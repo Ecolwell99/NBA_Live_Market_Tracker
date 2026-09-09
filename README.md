@@ -621,8 +621,36 @@ all of that player's made field goals when expanded.
   element on every basket and snaps shut. That is the open bug on the NFL tool's
   Drives tab. Holding the state ourselves also means the 15s autorefresh can't close
   it.
-- **One rerun per click.** The card is written into an `st.empty()` placeholder
-  claimed before the button, so it renders *below* the button in code but *above* it
-  on screen — and therefore after the click has been read. No `st.rerun()`.
+- **The button sits on the card's own title line, top right, and is overlaid there by
+  CSS.** A Streamlit widget cannot be nested inside a block of our own HTML, so it is
+  emitted immediately *before* the card and then pulled back over it by
+  `div[class*="st-key-kpall_"]`. Three numbers, all in that rule's comment:
+  - `margin-bottom: -36px` cancels the button out of the flow — its own 20px height
+    plus the one extra 1rem `stVerticalBlock` gap that inserting an element costs
+    (Streamlit's flex gap does not collapse with margins). Without it, a player with
+    the toggle would sit lower than a player without one. **This is the only value
+    inferred from Streamlit's own layout, so it is the one to change if the button
+    ever appears clear above or below the card rather than on it.**
+  - `transform: translateY(9px)` drops the button onto the name line. A transform is a
+    paint offset, so it costs nothing in layout. 9px = the card's 2px border + 8px
+    padding, less half the 2px by which the button overhangs the 18px name line.
+  - `margin-right: 14px` **on the button, not the wrapper** — Streamlit gives element
+    containers `width: 100%`, so padding or margin on the wrapper only overflows it to
+    the right and moves nothing. 14px is the card's border + padding again, so the
+    button's right edge meets the card's inner edge.
+  Measured in a headless-Chrome mock of the real wrapper chain (flex column,
+  `gap: 1rem`): button centred on the name line to 0px, fully inside the card box,
+  inset 14px, and the card sitting exactly where it does with no button
+  (21px below the heading, 22px between cards — both unchanged). `.kp .nm` reserves
+  66px on the right so a long name wraps rather than running under the button, and
+  `pointer-events` is off on the full-width wrapper so it cannot swallow clicks on the
+  name.
+- **One rerun per click**, and now for free: the button is rendered before the card, so
+  the click is read before the card is built. No `st.rerun()`, and the `st.empty()`
+  placeholder the previous below-the-card layout needed is gone.
+- **No `help=` on the button.** Streamlit positions the `help` tooltip on hover and it
+  does not reliably tear down when the page reruns underneath the cursor, so on a tab
+  that repolls every 15s it gets left behind on screen. Reported that way by the user;
+  the label (`All 7` / `Hide`) says enough on its own.
 - The button is hidden until a player has more than one make, since a one-row list is
   what the closed card already shows.

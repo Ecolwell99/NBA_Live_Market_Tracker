@@ -346,7 +346,14 @@ CSS = """
   background: rgba(128,128,128,0.06); border: 2px solid transparent;
   border-radius: 8px; padding: 8px 12px; margin-bottom: 6px;
 }
-.kp .nm { font-size: 13px; font-weight: 700; color: var(--text-color); }
+/* The title line's height is fixed, not left to the font, because the All/Hide
+   button is overlaid on it by a negative margin (see .st-key-kpall_ below) and
+   the two have to agree. The right padding is the button's landing strip: a long
+   name wraps to a second line rather than running underneath it. */
+.kp .nm {
+  font-size: 13px; font-weight: 700; color: var(--text-color);
+  line-height: 18px; padding-right: 66px;
+}
 .kp .ln { font-size: 13px; color: var(--text-color); opacity: .85; margin-top: 2px; }
 .kp .ln.none { opacity: .45; }
 .kp.hot { border-color: #ff9900; background: rgba(255,153,0,0.12); }
@@ -389,15 +396,48 @@ CSS = """
 }
 .st-key-edit_kp button p { font-size: 12px; margin: 0; }
 
-/* The per-card "All N" / "Hide" toggle on a key player. Its key carries the
-   player id, so the wrapper class is matched on the prefix rather than in full.
-   Pulled up snug against the card above and right-aligned, so it reads as that
-   card's own footer and not as a control floating between two cards. */
-div[class*="st-key-kpall_"] { margin: -5px 0 9px 0; display: flex; justify-content: flex-end; }
-div[class*="st-key-kpall_"] button {
-  padding: 1px 10px; min-height: 0; font-size: 11px; font-weight: 700; opacity: .75;
+/* The per-card "All N" / "Hide" toggle on a key player, sitting on the top right
+   of that player's own box. Its key carries the player id, so the wrapper class is
+   matched on the prefix rather than in full.
+
+   A Streamlit widget cannot be nested inside a block of our own HTML, so the
+   button is rendered immediately BEFORE its card and then lifted back over it.
+   Two rules, kept separate on purpose:
+
+   * The bottom margin cancels the button out of the flow, so the card lands
+     exactly where it would sit if the button were not there at all - otherwise a
+     player with the toggle would sit lower than a player without it. Inserting the
+     wrapper costs its own height plus ONE extra Streamlit flex `gap` (1rem, and
+     that gap does not collapse with margins), so the amount to cancel is
+     `height + gap = 20 + 16 = 36`, which puts the button's top edge on the card's
+     top edge. **If the button sits clear above or below the card rather than on
+     it, this is the one number to change**: it is the only value here inferred
+     from Streamlit's own layout rather than declared by these rules.
+   * The button is then dropped onto the title line with `translateY`, a paint
+     offset that costs nothing in layout. 9px = the card's 2px border plus its 8px
+     top padding, less half the 2px by which the 20px button overhangs the 18px
+     name line. The 14px right margin is that same border + padding on the other
+     axis, so the button's right edge lines up with the card's inner edge rather
+     than overhanging the border. It sits on the button and not on the wrapper:
+     Streamlit gives element containers `width: 100%`, so wrapper padding or margin
+     just makes the box overflow to the right and moves nothing. Measured: both
+     offsets leave the button centred on the name line and inside the card box.
+
+   `pointer-events` is off on the full-width wrapper and back on for the button,
+   or an invisible strip would sit across the player's name. */
+div[class*="st-key-kpall_"] {
+  display: flex; justify-content: flex-end; height: 20px;
+  margin: 0 0 -36px 0;
+  position: relative; z-index: 2; pointer-events: none;
 }
-div[class*="st-key-kpall_"] button p { font-size: 11px; margin: 0; }
+div[class*="st-key-kpall_"] > div { width: auto; }
+div[class*="st-key-kpall_"] button {
+  height: 20px; min-height: 0; padding: 0 9px; line-height: 18px;
+  font-size: 11px; font-weight: 700; opacity: .7;
+  margin-right: 14px; transform: translateY(9px); pointer-events: auto;
+}
+div[class*="st-key-kpall_"] button:hover { opacity: 1; }
+div[class*="st-key-kpall_"] button p { font-size: 11px; line-height: 18px; margin: 0; }
 </style>
 """
 
@@ -2228,14 +2268,18 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
       carries live data is a new element each time it changes, so it would snap
       shut on the next poll - the bug the NFL tool's Drives tab has.
 
-    The card is written into an `st.empty()` placeholder claimed *before* the
-    button, so the card appears above it but is rendered after the click has been
-    read. That keeps a toggle to a single rerun: no `st.rerun()`, no second pass
-    over the alert bookkeeping.
+    The button is emitted *before* the card and then pulled down onto the card's
+    title line by CSS, because a Streamlit widget cannot be nested inside our own
+    HTML. Rendering it first is also what keeps a toggle to a single rerun: the
+    click is read before the card is built, so there is no `st.rerun()` and no
+    second pass over the alert bookkeeping.
+
+    No `help=` on the button, deliberately. Streamlit's tooltip is positioned on
+    hover and does not always tear down when the page reruns underneath it - on a
+    tab that repolls every few seconds it gets left behind on screen.
     """
     makes = player_market_events(tg.events, tg.abbr_for, player_id)
     hot = any(a["player_id"] == player_id for a in st.session_state.kp_alerts)
-    card = st.empty()
 
     is_open = False
     # No control until there is something the closed card is not already showing.
@@ -2245,7 +2289,6 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
             "Hide" if was_open else f"All {len(makes)}",
             key=f"kpall_{player_id}",
             type="secondary",
-            help="Every made field goal by this player, with the market it settled",
         ):
             st.session_state.kp_open[player_id] = not was_open
         is_open = bool(st.session_state.kp_open.get(player_id))
@@ -2255,7 +2298,7 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
     else:
         body = '<div class="ln none">No made field goal yet</div>'
 
-    card.markdown(
+    st.markdown(
         f'<div class="{"kp hot" if hot else "kp"}">'
         f'<div class="nm">{html.escape(display)}</div>{body}</div>',
         unsafe_allow_html=True,
