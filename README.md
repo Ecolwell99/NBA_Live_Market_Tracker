@@ -575,15 +575,28 @@ attempt: `market_anchor_score`, `event_result`, `post_event_score`, and
   one, and the final checkpoint equals both the last made field goal's board and
   the official final score.
 - **The first-shot tables still show the plain board**, because they are not market
-  names. The Key Player Tracker no longer does — see 4.9.
+  names. The Key Player Tracker shows an anchor, but a per-player one that is not a
+  market name either — see 4.9.
 
 ### 4.9 Key player cards, and the expand toggle
 
 Each key player card shows the After / Result / Time table from 4.8: one row closed,
-all of that player's made field goals when expanded. `player_market_events` filters
-`fg_market_events` by `player_id`, so the anchors are still derived over the whole
-game before filtering.
+all of that player's made field goals when expanded.
 
+- **The anchor here is per player, not the game-wide checkpoint — on purpose, and it
+  is the one place in the tool where "After" does not name a market.** The panels
+  answer *which open market did this attempt settle*, so their anchor moves on the
+  opponent's baskets too. A card answers *where the game stood each time this player
+  scored*, so `player_market_events` runs its own walk that only advances on his own
+  makes. Two consequences, both intended and both requested:
+  - **the oldest row is always `0-0`**, because there is no basket of his behind it;
+  - **an anchor may never have been an open market name.** He scores, board 2-0; the
+    opponent scores, board 2-3; he scores again. That row reads `2-0`, the board after
+    his own last basket, while the market open at that moment was "after 2-3". If you
+    need exact market names, the panels below the cards are where they are exact.
+- `score_suspect` still guards the row, but it can now only fire on a feed that
+  contradicts itself: the anchor is this player's own previous post-score and the
+  board cannot fall.
 - **Closed and open are the same table**, one row or all of them. The card used to
   carry a summary line with the live scoreboard (`format_event_line`, now deleted —
   it had no other caller). That would have contradicted row one of the list it

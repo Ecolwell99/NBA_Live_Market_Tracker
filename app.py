@@ -1359,17 +1359,47 @@ def recent_fg_market_events(events: Sequence[GameEvent], abbr_for: dict[str, str
 
 def player_market_events(events: Sequence[GameEvent], abbr_for: dict[str, str],
                          player_id: str) -> list[FGMarketEvent]:
-    """Every made field goal by one player, newest first, with the market each
-    settled. Unbounded on purpose - it is behind a per-card toggle, and the whole
-    point is to see the lot.
+    """Every made field goal by one player, newest first, anchored **to that player's
+    own previous basket** rather than to the game-wide checkpoint.
 
-    Same derive-then-filter order as `recent_fg_market_events`, for the same
-    reason: anchors move on the opponent's baskets as well.
+    This is deliberately NOT `fg_market_events` filtered down, and the difference
+    matters. The panels answer "which open market did this attempt settle", so their
+    anchor moves on the opponent's baskets too. A key player card answers a different
+    question - where the game stood each time this player scored - so the walk here
+    only advances on his own makes. Consequences, both intended:
+
+    * the oldest row is always `0-0`, because there was no previous basket of his;
+    * an anchor here may never have been an open market name. He scores, board 2-0;
+      the opponent scores, board 2-3; he scores again. This row reads `2-0`, the
+      board after his own last basket, while the market actually open at that moment
+      was "after 2-3". The panels in section 8 are where market names are exact.
+
+    Unbounded on purpose: it sits behind a per-card toggle and the point is the lot.
     """
-    return list(reversed([
-        r for r in fg_market_events(events, abbr_for)
-        if r.made and r.event.player_id == player_id
-    ]))
+    anchor = (0, 0)
+    rows: list[FGMarketEvent] = []
+    for ev in fg_attempts(events):
+        if not ev.made or ev.player_id != player_id:
+            continue
+        post = (ev.away_score, ev.home_score)
+        # The board cannot fall, so this only fires on a feed that contradicts itself.
+        suspect = post[0] < anchor[0] or post[1] < anchor[1]
+        abbr = abbr_for.get(ev.team_id, "")
+        rows.append(
+            FGMarketEvent(
+                event=ev,
+                market_anchor_score=anchor,
+                event_result=f"{abbr} {_result_text(ev)}".strip(),
+                post_event_score=post,
+                # Here this means "the anchor his next basket will carry", not "the
+                # score the next market opens on".
+                new_market_anchor_score=None if suspect else post,
+                score_suspect=suspect,
+            )
+        )
+        if not suspect:
+            anchor = post
+    return list(reversed(rows))
 
 
 def latest_made_fg(events: Sequence[GameEvent], player_id: str) -> GameEvent | None:
