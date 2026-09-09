@@ -683,9 +683,9 @@ all of that player's made field goals when expanded.
 
 ### 4.10 Team logos in the game header
 
-A 20px logo sits on the outboard edge of each team's half of the header block, so the
-two scores stay the innermost thing in it. Everything below was measured on
-2026-09-08, before any of it was written.
+A 34px logo — the same height as the score — sits on the outboard edge of each team's
+half of the header block, so the two scores stay the innermost thing in it. Everything
+below was measured on 2026-09-08.
 
 - **They cost no extra request.** The logo URL is already in the two payloads the tool
   polls, on the same team object it already reads for the abbreviation and the display
@@ -708,20 +708,32 @@ two scores stay the innermost thing in it. Everything below was measured on
   minimum alpha 0, and 33–72% of pixels fully transparent (SA 72%, LAL 66%, NY 61%,
   BKN 33%, GS 33%). They composite straight onto the panel, which is
   `rgba(128,128,128,0.05)` over `#101318` ≈ `#16181D`.
-- **20px, not 16px, and the reason is ESPN's padding rather than taste.** Each mark is
-  inset differently inside its 500×500 canvas — 92% of the canvas for BKN and GS, 76%
-  wide for SA, but only **56% tall for LAL** — so a 16px box is not 16px of logo. It
-  gives a wordmark team about 9px of height, and rendered against the real header
-  colour at 16 / 20 / 26px, LAL and NY turned to mush at 16 while the simple shapes
-  (SA's spur, BKN's B) survived. 20 is the smallest size every team stays legible at.
-  26px read cleanly but would have disturbed the 16px name / 34px score row.
-- **The header did not get taller.** Measured with the real CSS in headless Chrome:
-  the block is 69.0px with logos and 69.0px without. `.tm` is `align-items: baseline`,
-  so a 20px image needs less ascent than the 34px score already does.
+- **`LOGO_PX = 34`, matched to the score, and it shipped at 20 first — which was the
+  wrong question answered well.** 20 is the smallest size every team stays *legible*
+  at, and that is worth knowing, because ESPN insets each mark differently inside its
+  500×500 canvas: 92% of the canvas for BKN and GS, 76% wide for SA, but only **56%
+  tall for LAL**. So a 16px box is not 16px of logo — it gives a wordmark team about
+  9px of height, and rendered against the real header colour, LAL and NY turned to mush
+  at 16px while the simple shapes (SA's spur, BKN's B) survived. But legible is not the
+  same as proportionate: next to a 34px score, 20px read as an afterthought ("much
+  smaller than I imagined"). **Sizing a thing by its legibility floor is not the same
+  as sizing it against what it sits beside.**
+- **`.gh .tm` is `align-items: center`, and it has to be at any size above 20px.**
+  Baseline alignment puts a replaced element's baseline at its *bottom* edge, so once
+  the logo is taller than the score's ascent it stops sitting beside the text and
+  starts dragging the row: measured at 30px, the logo pinned to the top of the row with
+  28px of dead space beneath it. `align-self: center` on the image alone does not fix
+  it — the row still grows and the logo lands 12px below the score's centre. The row
+  has to be centred.
+- **The header block costs 3px, not 15px** — 69px at 20px baseline-aligned, 72px at
+  34px centred. Left baseline-aligned it would have been 84px at this size (and 84px
+  from 24px upward, so 28px would have cost the same height as 34px for a smaller
+  logo). Centring the row is therefore not only what makes a 34px logo sit right, it is
+  what stops it costing header height. Logo centre to score centre measures 0.0px.
 - **The images are served at 2× through ESPN's resizer** (`ESPN_IMG_COMBINER`). The
   published files are 500×500 and 38–98 KB each, so a pair of them is ~200 KB of PNG
-  to paint two 20px icons; `combiner/i?img=…&w=40&h=40` returns the same logo in
-  **1,773 bytes**, still colour type 6, corners still fully transparent. Two things
+  to paint two icons; `combiner/i?img=…&w=68&h=68` returns the same logo in 3.2–4.9 KB,
+  still colour type 6, corners still fully transparent. Two things
   made this a one-line wrap rather than string surgery: the combiner accepts a **full
   URL** in `img=`, not just a site-relative path (both forms return the byte-identical
   file), and `a.espncdn.com` answers 200 from the office network — which had to be

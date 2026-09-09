@@ -84,13 +84,22 @@ KEY_ALERT_SECONDS = 30
 # Key players tracked per team.
 KEY_PLAYERS_PER_TEAM = 2
 
-# Team logo size in the game header (px). 20 was chosen by rendering 16 / 20 / 26
-# against the real header colour: ESPN pads each logo differently inside its
-# 500x500 canvas - the mark is 92% of the canvas for Brooklyn and Golden State but
-# only 56% tall for the Lakers - so a 16px box gives a wordmark logo about 9px of
-# height and it turns to mush. 20 is the smallest size every team stays legible at
-# without disturbing the 16px name / 34px score row it sits in.
-LOGO_PX = 20
+# Team logo size in the game header (px). Matched to the 34px score, so the logo and
+# the number it sits beside are the same height.
+#
+# It shipped at 20 first, which was the wrong question answered well: 20 is the
+# smallest size every team stays *legible* at (ESPN pads each mark differently inside
+# its 500x500 canvas - 92% of the canvas for Brooklyn and Golden State, only 56% tall
+# for the Lakers - so a 16px box leaves a wordmark team about 9px of height and it
+# turns to mush). Legible is not the same as proportionate, and against a 34px score
+# it read as an afterthought.
+#
+# Anything above 20 also needs `.gh .tm` centred rather than baseline-aligned - see
+# the CSS. Measured with the real CSS: the header block was 69px at 20, is 72px here,
+# and would have been 84px at this size if the row had been left baseline-aligned. So
+# centring the row is not only what makes a 34px logo sit right, it is also what keeps
+# it from costing 15px of header height.
+LOGO_PX = 34
 
 # On-floor panel (top of the Live tab). How many recent substitutions to list under
 # each team's five, and how many pairs of one simultaneous change can highlight at
@@ -211,15 +220,21 @@ CSS = """
   border: 1px solid var(--secondary-background-color);
   color: var(--text-color);
 }
-.gh .tm { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+/* `center`, not the `baseline` this row used before it carried a logo. Baseline
+   alignment puts a replaced element's baseline at its bottom edge, so once the logo is
+   taller than the score's ascent it stops sitting next to the text and starts dragging
+   the row: measured at 30px, the logo pinned to the top of the row with 28px of dead
+   space underneath it. Centring is also what the row wants on its own terms - a 34px
+   logo, a 34px score and a 16px name have no shared baseline worth keeping. */
+.gh .tm { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .gh .tm.h { justify-content: flex-end; }
 /* Team logo, outboard of the name so the two scores stay the innermost thing in the
    block. The size is NOT set here - it comes from the tag's `width`/`height`, written
    from `LOGO_PX`, so there is one place to change it and no chance of the CSS and the
    attributes disagreeing. What is set here is what the attributes cannot do:
-   `flex: 0 0 auto`, because a flex item whose intrinsic width is 500px would otherwise
-   be sized by the flex algorithm rather than by its attributes, and `object-fit` in
-   case a future logo is not square. No background and no border-radius: the source
+   `flex: 0 0 auto`, so the flex algorithm cannot resize it off its own attributes - it
+   arrives at 2x the box it is drawn in - and `object-fit` in case a future logo is not
+   square. No background and no border-radius: the source
    PNGs are RGBA with fully transparent corners (measured), so they composite straight
    onto the panel with nothing behind them. */
 .gh .lg { flex: 0 0 auto; object-fit: contain; }
