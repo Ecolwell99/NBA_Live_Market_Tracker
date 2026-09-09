@@ -400,41 +400,39 @@ CSS = """
    of that player's own box. Its key carries the player id, so the wrapper class is
    matched on the prefix rather than in full.
 
-   A Streamlit widget cannot be nested inside a block of our own HTML, so the
-   button is rendered immediately BEFORE its card and then lifted back over it.
-   Two rules, kept separate on purpose:
+   A Streamlit widget cannot be nested inside a block of our own HTML, so the button
+   is rendered immediately BEFORE its card and then lifted back over it.
 
-   * The bottom margin cancels the button out of the flow, so the card lands
-     exactly where it would sit if the button were not there at all - otherwise a
-     player with the toggle would sit lower than a player without it. Inserting the
-     wrapper costs its own height plus ONE extra Streamlit flex `gap` (1rem, and
-     that gap does not collapse with margins), so the amount to cancel is
-     `height + gap = 20 + 16 = 36`, which puts the button's top edge on the card's
-     top edge. **If the button sits clear above or below the card rather than on
-     it, this is the one number to change**: it is the only value here inferred
-     from Streamlit's own layout rather than declared by these rules.
-   * The button is then dropped onto the title line with `translateY`, a paint
-     offset that costs nothing in layout. 9px = the card's 2px border plus its 8px
-     top padding, less half the 2px by which the 20px button overhangs the 18px
-     name line. The 14px right margin is that same border + padding on the other
-     axis, so the button's right edge lines up with the card's inner edge rather
-     than overhanging the border. It sits on the button and not on the wrapper:
-     Streamlit gives element containers `width: 100%`, so wrapper padding or margin
-     just makes the box overflow to the right and moves nothing. Measured: both
-     offsets leave the button centred on the name line and inside the card box.
+   The button is placed by `position: absolute` against the wrapper, NOT by aligning
+   it inside one. Flex alignment on the wrapper was the first attempt and it put the
+   button on top of the player's name: `justify-content: flex-end` moves the
+   wrapper's child div, and Streamlit keeps that div full width, so the button
+   inside it stayed at the left edge. Absolute positioning resolves against the
+   nearest positioned ancestor, which is the wrapper, so it cannot be defeated by
+   the width or the depth of whatever Streamlit puts in between.
 
-   `pointer-events` is off on the full-width wrapper and back on for the button,
-   or an invisible strip would sit across the player's name. */
+   * `right: 14px` / `top: 9px` are the card's own 2px border + 8px padding, so the
+     button's edges meet the card's inner edges (the 9px is 10px less half the 2px
+     by which the 20px button overhangs the 18px name line).
+   * `margin-bottom: -36px` cancels the button out of the flow, so the card lands
+     where it would sit if the button were not there at all - otherwise a player
+     with a toggle would sit lower than a player without one. Inserting the wrapper
+     costs its own 20px height plus ONE extra Streamlit flex `gap` (1rem, which does
+     not collapse with margins): 20 + 16 = 36. **This is the only value here
+     inferred from Streamlit's own layout, so if the button sits clear above or
+     below the card rather than on its title line, it is the one to change.**
+
+   `pointer-events` is off on the full-width wrapper and back on for the button, or
+   an invisible strip would sit across the player's name. */
 div[class*="st-key-kpall_"] {
-  display: flex; justify-content: flex-end; height: 20px;
-  margin: 0 0 -36px 0;
-  position: relative; z-index: 2; pointer-events: none;
+  position: relative; height: 20px; margin: 0 0 -36px 0;
+  overflow: visible; z-index: 2; pointer-events: none;
 }
-div[class*="st-key-kpall_"] > div { width: auto; }
 div[class*="st-key-kpall_"] button {
+  position: absolute; top: 9px; right: 14px;
   height: 20px; min-height: 0; padding: 0 9px; line-height: 18px;
   font-size: 11px; font-weight: 700; opacity: .7;
-  margin-right: 14px; transform: translateY(9px); pointer-events: auto;
+  white-space: nowrap; pointer-events: auto;
 }
 div[class*="st-key-kpall_"] button:hover { opacity: 1; }
 div[class*="st-key-kpall_"] button p { font-size: 11px; line-height: 18px; margin: 0; }
@@ -2250,6 +2248,20 @@ def render_feed(rows: Sequence[FGMarketEvent], empty_text: str,
     st.markdown(feed_html(rows, include_team), unsafe_allow_html=True)
 
 
+def toggle_kp_open(player_id: str) -> None:
+    """Flip one key player's make list open or closed.
+
+    A callback and not an `if st.button(...)` body, because a button's label is an
+    argument to the widget and is therefore fixed before the click is handled: read
+    the state inline and the run in which you click renders the OLD label, so the
+    list expands while the button still says "All 7" until the next poll. Streamlit
+    runs `on_click` before the script body, so anything read after this - the label
+    included - already sees the new value.
+    """
+    open_now = st.session_state.kp_open
+    open_now[player_id] = not open_now.get(player_id)
+
+
 def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
     """One key player: their latest made field goal, expandable to all of them.
 
@@ -2270,9 +2282,9 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
 
     The button is emitted *before* the card and then pulled down onto the card's
     title line by CSS, because a Streamlit widget cannot be nested inside our own
-    HTML. Rendering it first is also what keeps a toggle to a single rerun: the
-    click is read before the card is built, so there is no `st.rerun()` and no
-    second pass over the alert bookkeeping.
+    HTML. It toggles through `toggle_kp_open` as an `on_click` callback, which is
+    what makes the label and the list agree in the same run, and it keeps a click to
+    a single rerun: no `st.rerun()`, no second pass over the alert bookkeeping.
 
     No `help=` on the button, deliberately. Streamlit's tooltip is positioned on
     hover and does not always tear down when the page reruns underneath it - on a
@@ -2281,17 +2293,18 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
     makes = player_market_events(tg.events, tg.abbr_for, player_id)
     hot = any(a["player_id"] == player_id for a in st.session_state.kp_alerts)
 
-    is_open = False
+    # Read AFTER the on_click callback below has run, so the label and the list it
+    # controls always agree - see the docstring.
+    is_open = bool(st.session_state.kp_open.get(player_id))
     # No control until there is something the closed card is not already showing.
     if len(makes) > 1:
-        was_open = bool(st.session_state.kp_open.get(player_id))
-        if st.button(
-            "Hide" if was_open else f"All {len(makes)}",
+        st.button(
+            "Hide" if is_open else f"All {len(makes)}",
             key=f"kpall_{player_id}",
             type="secondary",
-        ):
-            st.session_state.kp_open[player_id] = not was_open
-        is_open = bool(st.session_state.kp_open.get(player_id))
+            on_click=toggle_kp_open,
+            args=(player_id,),
+        )
 
     if makes:
         body = feed_html(makes if is_open else makes[:1])

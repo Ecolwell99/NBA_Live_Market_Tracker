@@ -624,30 +624,39 @@ all of that player's made field goals when expanded.
 - **The button sits on the card's own title line, top right, and is overlaid there by
   CSS.** A Streamlit widget cannot be nested inside a block of our own HTML, so it is
   emitted immediately *before* the card and then pulled back over it by
-  `div[class*="st-key-kpall_"]`. Three numbers, all in that rule's comment:
+  `div[class*="st-key-kpall_"]`.
+  - **It is placed by `position: absolute` against the wrapper, not by aligning it
+    inside one.** The first attempt used `display: flex; justify-content: flex-end` on
+    the wrapper and **landed the button on top of the player's name**: flex alignment
+    moves the wrapper's *child div*, and Streamlit keeps that div full width, so the
+    button inside it never left the left edge. Absolute positioning resolves against
+    the nearest positioned ancestor — the wrapper — so no width or extra nesting level
+    Streamlit puts in between can defeat it. `right: 14px` / `top: 9px` are the card's
+    own 2px border + 8px padding, so the button's edges meet the card's inner edges.
   - `margin-bottom: -36px` cancels the button out of the flow — its own 20px height
     plus the one extra 1rem `stVerticalBlock` gap that inserting an element costs
     (Streamlit's flex gap does not collapse with margins). Without it, a player with
     the toggle would sit lower than a player without one. **This is the only value
     inferred from Streamlit's own layout, so it is the one to change if the button
-    ever appears clear above or below the card rather than on it.**
-  - `transform: translateY(9px)` drops the button onto the name line. A transform is a
-    paint offset, so it costs nothing in layout. 9px = the card's 2px border + 8px
-    padding, less half the 2px by which the button overhangs the 18px name line.
-  - `margin-right: 14px` **on the button, not the wrapper** — Streamlit gives element
-    containers `width: 100%`, so padding or margin on the wrapper only overflows it to
-    the right and moves nothing. 14px is the card's border + padding again, so the
-    button's right edge meets the card's inner edge.
-  Measured in a headless-Chrome mock of the real wrapper chain (flex column,
-  `gap: 1rem`): button centred on the name line to 0px, fully inside the card box,
-  inset 14px, and the card sitting exactly where it does with no button
-  (21px below the heading, 22px between cards — both unchanged). `.kp .nm` reserves
-  66px on the right so a long name wraps rather than running under the button, and
-  `pointer-events` is off on the full-width wrapper so it cannot swallow clicks on the
-  name.
-- **One rerun per click**, and now for free: the button is rendered before the card, so
-  the click is read before the card is built. No `st.rerun()`, and the `st.empty()`
-  placeholder the previous below-the-card layout needed is gone.
+    ever appears clear above or below the card rather than on its title line.**
+  - Verified in a headless-Chrome mock against **three** wrapper shapes —
+    `wrapper > .stButton > button`, an extra full-width div in between, and a flex
+    intermediate: all three give inset 14px, top 9px, button centred on the name line
+    to 0px, fully inside the card box, with the flow around it unchanged (21px below
+    the heading, 22px between cards). The same mock reproduces the flex version's
+    failure for the record: the button lands 294px from the card's right edge, over
+    the name.
+  - `.kp .nm` still reserves 66px on the right so a long name wraps rather than
+    running under the button, and `pointer-events` is off on the full-width wrapper so
+    it cannot swallow clicks on the name.
+- **The toggle flips through an `on_click` callback (`toggle_kp_open`), not an
+  `if st.button(...)` body.** A button's label is an *argument* to the widget, so it is
+  fixed before the click can be handled: reading the state inline rendered the run in
+  which you clicked with the OLD label, and the list expanded while the button still
+  said `All 7` until the next poll — reported as "it stays on All until you click it
+  again". Streamlit runs `on_click` before the script body, so the label, the list and
+  the state all agree within one rerun. Still one rerun per click: no `st.rerun()`, and
+  the `st.empty()` placeholder the old below-the-card layout needed is gone.
 - **No `help=` on the button.** Streamlit positions the `help` tooltip on hover and it
   does not reliably tear down when the page reruns underneath the cursor, so on a tab
   that repolls every 15s it gets left behind on screen. Reported that way by the user;
