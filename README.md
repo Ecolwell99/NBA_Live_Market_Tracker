@@ -322,6 +322,11 @@ adjusted, shot type detail reworded, description reworded.
   boxscore publishes, so the *text* changes with no correction behind it.
   `player_id` is the sole authority for shooter attribution (category 5); the
   name string is excluded from comparison entirely.
+- **Blank shooter filled in.** The feed often publishes a play (free throws
+  especially) before naming the shooter, then fills the player in on a later
+  poll. Categories 5 and 6 fire only when attribution moves between two *real*
+  players / teams; blank → player is ignored, along with the play-text rewrite
+  that comes with it. Any other change on the same play is still reported.
 - **Whitespace / formatting.** All text is normalised (`"Bad Pass\nTurnover"` →
   `"Bad Pass Turnover"`) before fingerprinting.
 - **Coordinates, shot distance, assist credit.** Excluded from the fingerprint —

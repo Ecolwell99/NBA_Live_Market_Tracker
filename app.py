@@ -1878,9 +1878,15 @@ def classify_change(before: dict[str, Any], after: dict[str, Any]) -> tuple[list
                 else "Free throw miss changed to make"
             )
 
-    if before["player_id"] != after["player_id"]:
+    # Attribution only counts as a correction when it moves from one real
+    # player (or team) to a DIFFERENT one. A blank being filled in is the feed
+    # catching up on a play it published before naming the shooter - free
+    # throws do this routinely - and nothing about the market changed.
+    filled_in = (not before["player_id"] and bool(after["player_id"])) or \
+                (not before["team_id"] and bool(after["team_id"]))
+    if before["player_id"] and after["player_id"] and before["player_id"] != after["player_id"]:
         impacts.append("Shooter attribution changed")
-    if before["team_id"] != after["team_id"]:
+    if before["team_id"] and after["team_id"] and before["team_id"] != after["team_id"]:
         impacts.append("Team attribution changed")
 
     if impacts:
@@ -1899,10 +1905,14 @@ def classify_change(before: dict[str, Any], after: dict[str, Any]) -> tuple[list
         minor.append("Clock adjusted")
     if (before["away_score"], before["home_score"]) != (after["away_score"], after["home_score"]):
         minor.append("Score adjusted")
-    if before["type_text"] != after["type_text"]:
-        minor.append("Shot type detail changed")
-    elif before["description"] != after["description"]:
-        minor.append("Description changed")
+    # A filled-in shooter rewrites the play text too ("Free Throw 1 of 2" ->
+    # "<Name> makes free throw 1 of 2"), so text-only churn alongside a fill-in
+    # is the same non-event and is not logged at all.
+    if not filled_in:
+        if before["type_text"] != after["type_text"]:
+            minor.append("Shot type detail changed")
+        elif before["description"] != after["description"]:
+            minor.append("Description changed")
     return minor, False
 
 
