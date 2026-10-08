@@ -1375,12 +1375,16 @@ def player_first_shot_row(events: Sequence[GameEvent], player_id: str) -> dict[s
     """First FG Attempt / First FG Type / First 3 Attempt for one player.
 
     Backs: Prematch Player First Field Goal Attempt / Type / First 3pt Attempt.
+
+    First FG Type resolves on the player's first MADE field goal (Made 2 / Made 3),
+    not their first attempt - a missed three followed by a made two is "Made 2".
     """
     fga = _first(events, lambda e: e.kind == KIND_FG and e.player_id == player_id)
+    fgm = _first(events, lambda e: e.kind == KIND_FG and e.made and e.player_id == player_id)
     tpa = _first(events, lambda e: e.kind == KIND_FG and e.points == 3 and e.player_id == player_id)
     return {
         "First FG Attempt": f"{'Made' if fga.made else 'Missed'} {fga.points}" if fga else DASH,
-        "First FG Type": str(fga.points) if fga else DASH,
+        "First FG Type": f"Made {fgm.points}" if fgm else DASH,
         "First 3 Attempt": ("Made" if tpa.made else "Missed") if tpa else DASH,
     }
 
