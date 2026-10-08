@@ -44,6 +44,7 @@ import html
 import json
 import re
 import time
+import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, asdict, field
 from datetime import date, datetime
@@ -83,6 +84,45 @@ KEY_ALERT_SECONDS = 30
 
 # Key players tracked per team.
 KEY_PLAYERS_PER_TEAM = 2
+
+# Default key players, keyed by ESPN's team abbreviation - note ESPN's short forms
+# GS, NO, NY, SA, UTAH, WSH. Names are matched to the game's roster ignoring case,
+# accents, punctuation and a trailing Jr. / Sr. / II / III / IV, so spell them as
+# ESPN does otherwise ("Stephen Curry", not "Steph Curry"). A name not on the
+# roster falls back to roster order and is named under that team's dropdowns.
+# All 60 checked against ESPN's 2026-27 rosters on 2026-10-08.
+KEY_PLAYER_PRESETS: dict[str, tuple[str, ...]] = {
+    "ATL": ("Jalen Johnson", "Nickeil Alexander-Walker"),
+    "BOS": ("Jayson Tatum", "Paul George"),
+    "BKN": ("Julius Randle", "Michael Porter Jr."),
+    "CHA": ("Brandon Miller", "Kon Knueppel"),
+    "CHI": ("Norman Powell", "Caleb Wilson"),
+    "CLE": ("Donovan Mitchell", "James Harden"),
+    "DAL": ("Cooper Flagg", "Kyrie Irving"),
+    "DEN": ("Nikola Jokic", "Jamal Murray"),
+    "DET": ("Cade Cunningham", "John Collins"),
+    "GS": ("Stephen Curry", "Kristaps Porzingis"),
+    "HOU": ("Kevin Durant", "Jabari Smith Jr."),
+    "IND": ("Tyrese Haliburton", "Pascal Siakam"),
+    "LAC": ("Brandon Ingram", "Darius Garland"),
+    "LAL": ("Luka Doncic", "Austin Reaves"),
+    "MEM": ("Cameron Boozer", "Cedric Coward"),
+    "MIA": ("Andrew Wiggins", "Bam Adebayo"),
+    "MIL": ("Tyler Herro", "Ryan Rollins"),
+    "MIN": ("Anthony Edwards", "LaMelo Ball"),
+    "NO": ("Trey Murphy III", "Dejounte Murray"),
+    "NY": ("Jalen Brunson", "Karl-Anthony Towns"),
+    "OKC": ("Shai Gilgeous-Alexander", "Jalen Williams"),
+    "ORL": ("Franz Wagner", "Paolo Banchero"),
+    "PHI": ("Tyrese Maxey", "Jaylen Brown"),
+    "PHX": ("Devin Booker", "Jalen Green"),
+    "POR": ("Damian Lillard", "Deni Avdija"),
+    "SAC": ("Zach LaVine", "Darius Acuff Jr."),
+    "SA": ("Victor Wembanyama", "Stephon Castle"),
+    "TOR": ("Kawhi Leonard", "RJ Barrett"),
+    "UTAH": ("Lauri Markkanen", "Darryn Peterson"),
+    "WSH": ("Trae Young", "AJ Dybantsa"),
+}
 
 # Team logo size in the game header (px). Matched to the 34px score, so the logo and
 # the number it sits beside are the same height.
@@ -2704,6 +2744,31 @@ def sync_key_player(widget_key: str, side: str, slot: int) -> None:
     st.session_state.key_players[side][slot] = st.session_state[widget_key]
 
 
+def _name_key(name: str) -> str:
+    """Matching key for a player name: Luka Dončić -> luka doncic, Michael Porter Jr. -> michael porter."""
+    s = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[.,'’]", "", s).replace("-", " ")
+    s = " ".join(s.split())
+    return re.sub(r" (jr|sr|ii|iii|iv)$", "", s)
+
+
+def preset_key_players(abbr: str, roster: Sequence[RosterPlayer]) -> tuple[list[str], list[str]]:
+    """KEY_PLAYER_PRESETS for one team, resolved against this game's roster.
+
+    Returns (player ids found, preset names not on the roster).
+    """
+    by_name = {_name_key(p.name): p.player_id for p in roster}
+    found: list[str] = []
+    missing: list[str] = []
+    for name in KEY_PLAYER_PRESETS.get(abbr, ()):
+        pid = by_name.get(_name_key(name))
+        if pid:
+            found.append(pid)
+        else:
+            missing.append(name)
+    return found, missing
+
+
 def key_player_controls(container, side: str, team: TeamInfo,
                         roster: Sequence[RosterPlayer], prefix: str) -> None:
     """Two dropdowns for one team, writing into the canonical key_players slot.
@@ -2718,10 +2783,20 @@ def key_player_controls(container, side: str, team: TeamInfo,
 
     ids = [p.player_id for p in roster]
     label_by_id = {p.player_id: p.label for p in roster}
-    current = st.session_state.key_players.get(side) or []
-    while len(current) < KEY_PLAYERS_PER_TEAM:
-        current.append(ids[len(current)] if len(current) < len(ids) else ids[0])
-    st.session_state.key_players[side] = current[:KEY_PLAYERS_PER_TEAM]
+    found, missing = preset_key_players(team.abbr, roster)
+    defaults = found + [pid for pid in ids if pid not in found]
+
+    # Empty slots, and slots whose id is not on this roster, take the presets.
+    # Switching games swaps the roster, so a stored id can fall outside the new
+    # option set - that is what makes a new game start on its own presets, and it
+    # must be repointed before the widget is built, or Streamlit raises on a
+    # session_state value that is not in `options`. A valid id is a pick already
+    # made for this team and is left alone.
+    current = list(st.session_state.key_players.get(side) or [])[:KEY_PLAYERS_PER_TEAM]
+    current += [""] * (KEY_PLAYERS_PER_TEAM - len(current))
+    spare = iter([pid for pid in defaults if pid not in current])
+    current = [pid if pid in ids else next(spare, ids[0]) for pid in current]
+    st.session_state.key_players[side] = current
 
     container.markdown(
         f'<div class="subsect">{html.escape(team.display_name)} key players</div>',
@@ -2730,12 +2805,6 @@ def key_player_controls(container, side: str, team: TeamInfo,
     for slot in range(KEY_PLAYERS_PER_TEAM):
         wkey = f"{prefix}_{side}_{slot}"
         value = st.session_state.key_players[side][slot]
-        # Switching games swaps the roster, so a stored id can fall outside the
-        # new option set. Repoint it before the widget is built, or Streamlit
-        # raises on a session_state value that is not in `options`.
-        if value not in ids:
-            value = ids[min(slot, len(ids) - 1)]
-            st.session_state.key_players[side][slot] = value
         # Mirror the canonical slot into the widget so the sidebar copy and the
         # Live-tab copy of this control can never drift apart.
         if st.session_state.get(wkey) != value:
@@ -2749,6 +2818,8 @@ def key_player_controls(container, side: str, team: TeamInfo,
             args=(wkey, side, slot),
             label_visibility="collapsed",
         )
+    if missing:
+        container.caption(f"Preset not on roster: {', '.join(missing)}")
 
 
 def render_manual_id_entry(sb) -> None:

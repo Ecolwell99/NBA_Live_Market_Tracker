@@ -35,7 +35,9 @@ streamlit run app.py
    another day. Or use **Add game by ID** (below) to skip the scoreboard entirely.
 2. **Select a game** — live games sort first, then upcoming, then finals.
 3. Both rosters load automatically.
-4. Pick **two key players per team** from the roster dropdowns.
+4. **Key players** start on each team's preset two (`KEY_PLAYER_PRESETS` in SECTION 1
+   of `app.py`); change either from the roster dropdowns. A preset name not on the
+   roster falls back to roster order and is listed under that team's dropdowns.
 5. **Track Game** — starts polling and enables the three tabs.
 
 No play-by-play request is made until you press **Track Game**. Once tracking, the
