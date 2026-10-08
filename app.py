@@ -260,7 +260,7 @@ CSS = """
 .alert {
   font-size: 14px; font-weight: 700; padding: 10px 14px; border-radius: 8px;
   margin-bottom: 6px;
-  background-color: #3a1600; color: #ffd966; border: 2px solid #ff9900;
+  background-color: #0f2e1a; color: #b8f5c8; border: 2px solid #00cc44;
 }
 
 /* --- event feed rows (Next Field Goal markets) ----------------------------
@@ -386,13 +386,13 @@ CSS = """
    rows - and the container frame is a best-effort bonus on top. Nothing about the
    flash depends on that bonus rule matching. */
 .kpnm { font-size: 13px; font-weight: 700; color: var(--text-color); line-height: 18px; }
-.kpnm.hot { color: #ff9900; }
+.kpnm.hot { color: #00cc44; }
 .kpnone { font-size: 13px; color: var(--text-color); opacity: .45; }
 /* Pulls the shot list up under the title row: Streamlit's 1rem block gap is too much
    air between a name and the table that belongs to it. A margin, so if the gap ever
    changes this only gets tighter or looser, never broken. */
 .kpbody { margin-top: -10px; }
-.kpbody.hot .frow { background: rgba(255,153,0,0.14); }
+.kpbody.hot .frow { background: rgba(0,204,68,0.14); }
 .kpbody.hot .fhead { opacity: .6; }
 
 /* Best effort, and only that: paint the flash on the container itself so it frames
@@ -415,7 +415,7 @@ CSS = """
    selector being right. */
 div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
   :has(div[data-testid="stVerticalBlockBorderWrapper"] .kpbody)) {
-  border-color: #ff9900 !important; background: rgba(255,153,0,0.10);
+  border-color: #00cc44 !important; background: rgba(0,204,68,0.10);
 }
 
 /* --- tab strip -----------------------------------------------------------
@@ -2410,7 +2410,7 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
 
     The price is that the flash alert can no longer be a border on our own div. It is
     painted instead on the two parts of the card we still own, the name (`.kpnm.hot`)
-    and the shot rows (`.kpbody.hot`), with an orange container frame as a best-effort
+    and the shot rows (`.kpbody.hot`), with a green container frame as a best-effort
     extra. The requirement that the flash frame the baskets and not just the name is
     still met, and it no longer depends on a selector that might not match.
 
