@@ -266,8 +266,8 @@ Read this section before resulting anything off the tool.
 
 This is where the tool is most useful and also where it is most opinionated.
 
-**How detection works.** Every poll, the tracked events (FG / FT / turnover only —
-rebounds, fouls and substitutions are excluded to keep the diff quiet) are
+**How detection works.** Every poll, the tracked events (FG / turnover only —
+free throws, rebounds, fouls and substitutions are excluded to keep the diff quiet) are
 fingerprinted and diffed against the previous snapshot. Three shapes are logged:
 
 - **REMOVED** — an event id in the previous snapshot is gone.
@@ -308,11 +308,9 @@ are *not* substitution-related — see 4.7.
 7. Shot → turnover, or turnover → shot
 8. Dunk classification added or removed
 
-**One deliberate addition — a ninth category.** Made free throw added, removed or
-flipped is flagged as market-impacting, because it moves **Timeframe Both Teams
-To Score** (any made FT is a score inside a window). It is not in the spec's list
-of eight, so it is gated behind `FLAG_SCORING_FT_CHANGES = True` in SECTION 1 —
-set it to `False` to get exactly the eight canonical categories.
+**Free throws are not tracked at all** — removed 2026-10-12 as bloat; no market
+here needs an FT correction. A field goal re-tagged as a free throw still shows
+up, as that field goal being removed (category 1 or 2).
 
 **Changes deliberately treated as non-impacting** (logged, visible under *All
 Corrections*, never banner-worthy): period adjusted, clock adjusted, score

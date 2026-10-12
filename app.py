@@ -160,11 +160,6 @@ TIMEFRAME_ORDER = "chronological"
 REGULATION_PERIOD_SECONDS = 720
 OVERTIME_PERIOD_SECONDS = 300
 
-# Extra correction category beyond the eight canonical ones: a made free throw
-# being added or removed changes "Timeframe Both Teams To Score". Set to False
-# to restrict market-impacting flags to the eight categories in the spec.
-FLAG_SCORING_FT_CHANGES = True
-
 # Guard against false "event removed" corrections when the feed briefly returns
 # a truncated payload: skip removal detection if the play count drops by more
 # than this fraction in a single poll.
@@ -918,11 +913,13 @@ KIND_TURNOVER = "turnover"
 KIND_SUB = "sub"
 KIND_OTHER = "other"
 
-# Kinds that participate in stat-correction comparison. Rebounds, fouls and
-# substitutions (KIND_SUB) are excluded so routine feed churn cannot produce
-# noise. Substitutions are also kept out of the sequence / live-edge arithmetic
-# in SECTION 6 - see the comment in `detect_corrections` for why that matters.
-TRACKED_KINDS = (KIND_FG, KIND_FT, KIND_TURNOVER)
+# Kinds that participate in stat-correction comparison. Free throws, rebounds,
+# fouls and substitutions (KIND_SUB) are excluded so routine feed churn cannot
+# produce noise. Substitutions are also kept out of the sequence / live-edge
+# arithmetic in SECTION 6 - see the comment in `detect_corrections` for why
+# that matters. A field goal re-tagged as a free throw (or back) still shows,
+# as that field goal being removed (or added).
+TRACKED_KINDS = (KIND_FG, KIND_TURNOVER)
 
 # Word-boundary match so player names like "Ryan Dunn" never read as a dunk.
 _DUNK_RE = re.compile(r"\bdunk", re.IGNORECASE)
@@ -1897,11 +1894,6 @@ def classify_change(before: dict[str, Any], after: dict[str, Any]) -> tuple[list
                 "Shot changed to turnover" if after["kind"] == KIND_TURNOVER
                 else "Turnover changed to shot"
             )
-        elif FLAG_SCORING_FT_CHANGES and pair == {KIND_FG, KIND_FT}:
-            impacts.append(
-                "Field goal changed to free throw" if after["kind"] == KIND_FT
-                else "Free throw changed to field goal"
-            )
         else:
             impacts.append(f"Event type changed ({before['kind']} to {after['kind']})")
 
@@ -1913,13 +1905,6 @@ def classify_change(before: dict[str, Any], after: dict[str, Any]) -> tuple[list
         if before["is_dunk"] != after["is_dunk"]:
             impacts.append(
                 "Dunk classification added" if after["is_dunk"] else "Dunk classification removed"
-            )
-
-    if before["kind"] == KIND_FT and after["kind"] == KIND_FT and before["made"] != after["made"]:
-        if FLAG_SCORING_FT_CHANGES:
-            impacts.append(
-                "Free throw make changed to miss" if before["made"]
-                else "Free throw miss changed to make"
             )
 
     # Attribution only counts as a correction when it moves from one real
@@ -1972,12 +1957,6 @@ def classify_presence(fp: dict[str, Any], added: bool) -> tuple[list[str], bool]
         return impacts, True
     if kind == KIND_TURNOVER:
         return [f"Turnover {verb}"], True
-    if kind == KIND_FT:
-        # Not one of the eight canonical categories, but a made free throw
-        # appearing or vanishing does move Timeframe Both Teams To Score.
-        if fp["made"] and FLAG_SCORING_FT_CHANGES:
-            return [f"Made free throw {verb} (scoring event)"], True
-        return [f"Free throw {verb}"], False
     return [f"Event {verb}"], False
 
 
@@ -2019,6 +1998,10 @@ def detect_corrections(events: Sequence[GameEvent], prev_snapshot: dict[str, dic
     """
     tracked = [e for e in events if e.kind in TRACKED_KINDS]
     current = {e.event_id: fingerprint(e) for e in tracked}
+    # A snapshot from before a kind left TRACKED_KINDS (session_state outlives an
+    # edit, the sidecar outlives a restart) still holds those plays, and every one
+    # would otherwise log as removed on the next poll.
+    prev_snapshot = {k: v for k, v in prev_snapshot.items() if v.get("kind") in TRACKED_KINDS}
 
     # `max_seq` and the live edge below come from `tracked`, NOT from every event,
     # and substitutions are the reason. Measured over 9 games / 3,746 plays:
