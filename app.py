@@ -85,6 +85,9 @@ KEY_ALERT_SECONDS = 30
 # Key players tracked per team.
 KEY_PLAYERS_PER_TEAM = 2
 
+# Quarters shown on the Quarter Player tab, one table each.
+QUARTER_PLAYER_PERIODS = (2, 3, 4)
+
 # Default key players, keyed by ESPN's team abbreviation - note ESPN's short forms
 # GS, NO, NY, SA, UTAH, WSH. Names are matched to the game's roster ignoring case,
 # accents, punctuation and a trailing Jr. / Sr. / II / III / IV, so spell them as
@@ -205,8 +208,9 @@ STATE_DIR = Path(__file__).resolve().parent / ".tracker_state"
 # `render_tab_strip` for why that distinction matters.
 TAB_PREMATCH = "prematch"
 TAB_LIVE = "live"
+TAB_QUARTER = "quarter_player"
 TAB_CORRECTIONS = "corrections"
-TABS = (TAB_PREMATCH, TAB_LIVE, TAB_CORRECTIONS)
+TABS = (TAB_PREMATCH, TAB_LIVE, TAB_QUARTER, TAB_CORRECTIONS)
 
 CSS = """
 <style>
@@ -1421,6 +1425,28 @@ def player_first_shot_row(events: Sequence[GameEvent], player_id: str) -> dict[s
     tpa = _first(events, lambda e: e.kind == KIND_FG and e.points == 3 and e.player_id == player_id)
     return {
         "First FG Attempt": f"{'Made' if fga.made else 'Missed'} {fga.points}" if fga else DASH,
+        "First FG Type": f"Made {fgm.points}" if fgm else DASH,
+        "First 3 Attempt": ("Made" if tpa.made else "Missed") if tpa else DASH,
+    }
+
+
+def player_quarter_shot_row(events: Sequence[GameEvent], player_id: str,
+                            period: int) -> dict[str, str]:
+    """Quarter First FG Attempt / First FG Type / First 3 Attempt for one player.
+
+    Backs: Quarter N Player First Field Goal Attempt (Made/Missed), First Field Goal
+    Type (Made 2/Made 3), First 3pt Attempt (Made/Missed).
+
+    Same rules as `player_first_shot_row`, restricted to one period - except FG Attempt
+    is plain Made/Missed here, because that is how the quarter market settles.
+    """
+    mine = [e for e in events
+            if e.period == period and e.kind == KIND_FG and e.player_id == player_id]
+    fga = _first(mine, lambda e: True)
+    fgm = _first(mine, lambda e: e.made)
+    tpa = _first(mine, lambda e: e.points == 3)
+    return {
+        "First FG Attempt": ("Made" if fga.made else "Missed") if fga else DASH,
         "First FG Type": f"Made {fgm.points}" if fgm else DASH,
         "First 3 Attempt": ("Made" if tpa.made else "Missed") if tpa else DASH,
     }
@@ -2674,6 +2700,8 @@ def render_tab_strip() -> str:
             return "Prematch"
         if key == TAB_LIVE:
             return "Live"
+        if key == TAB_QUARTER:
+            return "Quarter Player"
         total = len(st.session_state.corrections)
         return f"Stat Corrections {'🔴' if total else '✅'} ({total})"
 
@@ -3306,6 +3334,30 @@ def render_live_tab(tg: TrackedGame) -> None:
         html_table(_first_event_rows([e for e in tg.events if e.period >= 3], game))
 
 
+def render_quarter_player_tab(tg: TrackedGame) -> None:
+    game = tg.game
+    name_by_id = {p.player_id: p.name for p in list(tg.away_roster) + list(tg.home_roster)}
+
+    for period in QUARTER_PLAYER_PERIODS:
+        sect(f"Quarter {period}")
+        if tg.max_period < period:
+            note(f"Activates when Quarter {period} begins.")
+            continue
+        left, right = st.columns(2, gap="medium")
+        for col, side, team in ((left, "away", game.away), (right, "home", game.home)):
+            with col:
+                subsect(f"{team.display_name} Key Players")
+                pids = [p for p in st.session_state.key_players.get(side) or [] if p]
+                if not pids:
+                    note("No key players selected.")
+                    continue
+                html_table([
+                    {"Player": name_by_id.get(pid) or _name_of(pid, tg.events) or pid,
+                     **player_quarter_shot_row(tg.events, pid, period)}
+                    for pid in pids
+                ])
+
+
 def render_corrections_tab() -> None:
     log = st.session_state.corrections
     impacting = [r for r in log if r.get("market_impacting")]
@@ -3554,6 +3606,8 @@ def main() -> None:
         render_prematch_tab(tg)
     elif active == TAB_LIVE:
         render_live_tab(tg)
+    elif active == TAB_QUARTER:
+        render_quarter_player_tab(tg)
     else:
         render_corrections_tab()
 

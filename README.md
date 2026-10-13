@@ -38,7 +38,7 @@ streamlit run app.py
 4. **Key players** start on each team's preset two (`KEY_PLAYER_PRESETS` in SECTION 1
    of `app.py`); change either from the roster dropdowns. A preset name not on the
    roster falls back to roster order and is listed under that team's dropdowns.
-5. **Track Game** — starts polling and enables the three tabs.
+5. **Track Game** — starts polling and enables the four tabs.
 
 No play-by-play request is made until you press **Track Game**. Once tracking, the
 app auto-refreshes every 4s (15s if the game has not tipped off, and not at all
@@ -406,6 +406,13 @@ re-flash the same correction; it stays visible for `CORRECTION_BANNER_SECONDS`
   draws (first-event, recent attempts, key players, timeframe, second half). The
   Possession Result and Next-FG-Attempt markets resolve from the same
   `GameEvent` primitives in SECTION 5 and are not yet given their own tables.
+- **Quarter Player tab** — key players only, one table per quarter
+  (`QUARTER_PLAYER_PERIODS`, Q2–Q4), backed by `player_quarter_shot_row`. Same
+  rules as the Prematch player row, restricted to plays in that period: First FG
+  Attempt is the first attempt (plain Made/Missed, no points), First FG Type is the
+  first *made* FG (Made 2/Made 3), First 3 Attempt is the first three-point attempt.
+  A quarter's table appears once that period's first play is in the feed; overtime
+  is not shown.
 
 ### 4.6 Players on the floor
 
