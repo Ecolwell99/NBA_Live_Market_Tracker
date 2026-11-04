@@ -1451,12 +1451,40 @@ def game_first_fg_row(events: Sequence[GameEvent], away_id: str, home_id: str) -
     }
 
 
+# Free-throw trip position from the play type: "Free Throw - 1 of 2", "Free Throw -
+# Flagrant 2 of 3". Every later shot of a trip carries the same clock and team as
+# the shot before it - 732/732 measured over 37 games - which is what groups a trip.
+_FT_OF_RE = re.compile(r"(\d+) of (\d+)")
+
+
+def _ft_trip_scored(events: Sequence[GameEvent], start: int) -> str:
+    """Score / No Score for the free-throw trip whose first shot is events[start].
+
+    One made free throw is enough for Score. No Score needs the trip's last shot
+    in the feed: after a missed 1 of 2 the cell stays pending rather than showing
+    No Score for one poll and flipping when the 2 of 2 goes in.
+    """
+    first = events[start]
+    trip = [e for e in events[start:]
+            if e.kind == KIND_FT and not e.is_technical and e.team_id == first.team_id
+            and e.period == first.period and e.clock_display == first.clock_display]
+    if any(e.made for e in trip):
+        return "Score"
+    for e in trip:
+        m = _FT_OF_RE.search(e.type_text)
+        if not m or m.group(1) == m.group(2):
+            return "No Score"
+    return DASH
+
+
 def team_first_possession_result(events: Sequence[GameEvent], team_id: str,
-                                 opp_id: str) -> str:
-    """How the team's first possession ended.
+                                 opp_id: str) -> tuple[str, str]:
+    """(Exact, Grouped) for how the team's first possession ended.
 
     Backs: Prematch [Team] Possession Result Exact (Attempted FT / Defensive
-    Rebound / Made 2 / Made 3 / Other). The first of these to happen settles it:
+    Rebound / Made 2 / Made 3 / Other) and Possession Result Grouped (Score / No
+    Score - a made field goal, or at least one made free throw in the trip, is
+    Score). The first of these to happen settles it:
       the team attempts a non-technical free throw   -> Attempted FT
       the team makes a field goal                    -> Made 2 / Made 3
       the OPPONENT takes a defensive rebound         -> Defensive Rebound
@@ -1472,30 +1500,33 @@ def team_first_possession_result(events: Sequence[GameEvent], team_id: str,
     possession. Checked on 37 games: in 37/37 the earliest such event belonged to
     the team that won the opening tip.
     """
-    for ev in events:
+    for i, ev in enumerate(events):
         if ev.team_id == team_id:
             if ev.kind == KIND_FT and not ev.is_technical:
-                return "Attempted FT"
+                return "Attempted FT", _ft_trip_scored(events, i)
             if ev.kind == KIND_FG and ev.made:
-                return f"Made {ev.points}"
+                return f"Made {ev.points}", "Score"
             if ev.kind == KIND_TURNOVER:
-                return "Other"
+                return "Other", "No Score"
         elif ev.team_id == opp_id and ev.kind == KIND_DEF_REBOUND:
-            return "Defensive Rebound"
-    return DASH
+            return "Defensive Rebound", "No Score"
+    return DASH, DASH
 
 
 def team_first_row(events: Sequence[GameEvent], team_id: str, opp_id: str) -> dict[str, str]:
-    """Possession Result / First FG Attempt Exact / First FG Attempt / First FG Type.
+    """Possession Result (+ Grouped) / First FG Attempt Exact / First FG Attempt /
+    First FG Type.
 
-    Backs: Prematch [Team] Possession Result Exact, First Field Goal Attempt Exact
+    Backs: Prematch [Team] Possession Result Exact and Grouped, First Field Goal Attempt Exact
     (Made 2 / Missed 2 / Made 3 / Missed 3), First Field Goal Attempt (Made /
     Missed), First Field Goal Type (Made 2 / Made 3 - the first MADE field goal).
     """
     fga = _first(events, lambda e: e.kind == KIND_FG and e.team_id == team_id)
     fgm = _first(events, lambda e: e.kind == KIND_FG and e.made and e.team_id == team_id)
+    exact, grouped = team_first_possession_result(events, team_id, opp_id)
     return {
-        "Possession Result": team_first_possession_result(events, team_id, opp_id),
+        "Possession Result": exact,
+        "Possession Grouped": grouped,
         "First FG Attempt Exact": f"{'Made' if fga.made else 'Missed'} {fga.points}" if fga else DASH,
         "First FG Attempt": ("Made" if fga.made else "Missed") if fga else DASH,
         "First FG Type": f"Made {fgm.points}" if fgm else DASH,
