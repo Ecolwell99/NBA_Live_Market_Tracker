@@ -915,6 +915,9 @@ KIND_TURNOVER = "turnover"
 # on-floor panel needs to find them, and naming them makes it explicit that they
 # are outside TRACKED_KINDS and so can never become a correction row.
 KIND_SUB = "sub"
+# Defensive rebounds end the shooting team's possession (Team Possession Result).
+# Offensive rebounds stay in KIND_OTHER: they continue the possession they follow.
+KIND_DEF_REBOUND = "def_rebound"
 KIND_OTHER = "other"
 
 # Kinds that participate in stat-correction comparison. Free throws, rebounds,
@@ -947,6 +950,12 @@ _WS_RE = re.compile(r"\s+")
 ESPN_SUB_TYPE_ID = "584"
 _SUB_TEXT_RE = re.compile(r"^(?P<incoming>.+?) enters the game for (?P<outgoing>.+?)$")
 
+# ESPN's defensive rebound play, team rebounds included ("Spurs defensive team
+# rebound" is type 155 too). Present with a team id on 2,617/2,617 defensive
+# rebounds across 37 games (2025-10-28, 2025-12-25, 2026-01-15, 2026-03-01,
+# 2026-04-08). The text check is the same backstop as the substitution one.
+ESPN_DEF_REBOUND_TYPE_ID = "155"
+
 
 @dataclass(frozen=True)
 class GameEvent:
@@ -976,6 +985,9 @@ class GameEvent:
     # otherwise be discarded.
     sub_out_id: str = ""
     sub_out_name: str = ""
+    # Free throws only. A technical free throw does not end a possession - the
+    # team that had the ball keeps it - so it cannot be a Possession Result.
+    is_technical: bool = False
 
     @property
     def is_fg_attempt(self) -> bool:
@@ -1077,6 +1089,12 @@ def _is_substitution(type_id: str, type_text: str, short_desc: str) -> bool:
         or type_text.lower() == "substitution"
         or short_desc.lower() == "substitution"
     )
+
+
+def _is_def_rebound(type_id: str, type_text: str) -> bool:
+    """Is this play a defensive rebound? Checked beside `_is_substitution`, for
+    the same reason: `type.id` is the reliable signal."""
+    return type_id == ESPN_DEF_REBOUND_TYPE_ID or type_text.lower() == "defensive rebound"
 
 
 def _sub_names_from_text(description: str) -> tuple[str, str]:
@@ -1184,6 +1202,8 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
 
         if _is_substitution(type_id, type_text, short_desc):
             kind, points = KIND_SUB, 0
+        elif _is_def_rebound(type_id, type_text):
+            kind, points = KIND_DEF_REBOUND, 0
         else:
             kind, points = _classify_play(
                 short_desc, type_text, description, shooting, pts_attempted, scoring
@@ -1258,6 +1278,7 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
                 short_desc=short_desc,
                 sub_out_id=sub_out_id,
                 sub_out_name=sub_out_name,
+                is_technical=kind == KIND_FT and "technical" in type_text.lower(),
             )
         )
 
@@ -1427,6 +1448,57 @@ def game_first_fg_row(events: Sequence[GameEvent], away_id: str, home_id: str) -
         "First FG Exact": f"{side} Made {fg.points}",
         "First FG Team": side,
         "First FG Type": f"Made {fg.points}",
+    }
+
+
+def team_first_possession_result(events: Sequence[GameEvent], team_id: str,
+                                 opp_id: str) -> str:
+    """How the team's first possession ended.
+
+    Backs: Prematch [Team] Possession Result Exact (Attempted FT / Defensive
+    Rebound / Made 2 / Made 3 / Other). The first of these to happen settles it:
+      the team attempts a non-technical free throw   -> Attempted FT
+      the team makes a field goal                    -> Made 2 / Made 3
+      the OPPONENT takes a defensive rebound         -> Defensive Rebound
+      the team turns it over                         -> Other
+    An offensive rebound, a non-shooting foul or a technical free throw does not
+    end the possession, so it is not on the list. An and-one settles on the made
+    field goal because the feed logs the shot before the free throw - on 153 of
+    155 and-ones measured over 37 games. The other 2 logged the free throw first
+    and would settle Attempted FT.
+
+    This needs no possession tracking: none of these four can happen to a team
+    while it is on defence, so the team's first one IS the end of its first
+    possession. Checked on 37 games: in 37/37 the earliest such event belonged to
+    the team that won the opening tip.
+    """
+    for ev in events:
+        if ev.team_id == team_id:
+            if ev.kind == KIND_FT and not ev.is_technical:
+                return "Attempted FT"
+            if ev.kind == KIND_FG and ev.made:
+                return f"Made {ev.points}"
+            if ev.kind == KIND_TURNOVER:
+                return "Other"
+        elif ev.team_id == opp_id and ev.kind == KIND_DEF_REBOUND:
+            return "Defensive Rebound"
+    return DASH
+
+
+def team_first_row(events: Sequence[GameEvent], team_id: str, opp_id: str) -> dict[str, str]:
+    """Possession Result / First FG Attempt Exact / First FG Attempt / First FG Type.
+
+    Backs: Prematch [Team] Possession Result Exact, First Field Goal Attempt Exact
+    (Made 2 / Missed 2 / Made 3 / Missed 3), First Field Goal Attempt (Made /
+    Missed), First Field Goal Type (Made 2 / Made 3 - the first MADE field goal).
+    """
+    fga = _first(events, lambda e: e.kind == KIND_FG and e.team_id == team_id)
+    fgm = _first(events, lambda e: e.kind == KIND_FG and e.made and e.team_id == team_id)
+    return {
+        "Possession Result": team_first_possession_result(events, team_id, opp_id),
+        "First FG Attempt Exact": f"{'Made' if fga.made else 'Missed'} {fga.points}" if fga else DASH,
+        "First FG Attempt": ("Made" if fga.made else "Missed") if fga else DASH,
+        "First FG Type": f"Made {fgm.points}" if fgm else DASH,
     }
 
 
@@ -3086,6 +3158,13 @@ def render_prematch_tab(tg: TrackedGame) -> None:
 
     sect("First Field Goal")
     html_table([game_first_fg_row(tg.events, game.away.team_id, game.home.team_id)])
+
+    sect("Team First Possession / Field Goal")
+    away_id, home_id = game.away.team_id, game.home.team_id
+    html_table([
+        {"Team": game.away.display_name, **team_first_row(tg.events, away_id, home_id)},
+        {"Team": game.home.display_name, **team_first_row(tg.events, home_id, away_id)},
+    ])
 
     sect("Game / Team First Field Goal")
     # First Dunk resolves on the first MADE dunk, classified from the feed's shot type
