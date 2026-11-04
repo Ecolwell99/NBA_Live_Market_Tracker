@@ -127,22 +127,36 @@ KEY_PLAYER_PRESETS: dict[str, tuple[str, ...]] = {
     "WSH": ("Trae Young", "AJ Dybantsa"),
 }
 
-# Team logo size in the game header (px). Matched to the 34px score, so the logo and
-# the number it sits beside are the same height.
+# Team logo size in the game header (px).
 #
 # It shipped at 20 first, which was the wrong question answered well: 20 is the
 # smallest size every team stays *legible* at (ESPN pads each mark differently inside
 # its 500x500 canvas - 92% of the canvas for Brooklyn and Golden State, only 56% tall
 # for the Lakers - so a 16px box leaves a wordmark team about 9px of height and it
-# turns to mush). Legible is not the same as proportionate, and against a 34px score
-# it read as an afterthought.
+# turns to mush). Legible is not the same as proportionate. 34 matched the old 34px
+# score; 56 came with the 2026-11-04 Prematch redesign, the user's pick from a
+# rendered mockup, beside a 46px score.
 #
 # Anything above 20 also needs `.gh .tm` centred rather than baseline-aligned - see
-# the CSS. Measured with the real CSS: the header block was 69px at 20, is 72px here,
-# and would have been 84px at this size if the row had been left baseline-aligned. So
-# centring the row is not only what makes a 34px logo sit right, it is also what keeps
-# it from costing 15px of header height.
-LOGO_PX = 34
+# the CSS. The same URL (fetched at 2x this) is drawn at `SMALL_LOGO_PX` in the
+# Prematch tables and cards; the browser scales it down, so it costs no request.
+LOGO_PX = 56
+SMALL_LOGO_PX = 24
+
+# Team accent colour - the edge of the game header, the stripe on a team's row and
+# the fill of its player panel header. ESPN's primary `color` where it reads against
+# the dark card background, else its `alternateColor`, else neutral grey (see
+# `team_accent`). 2:1 rather than the WCAG 3:1 for UI graphics: at 3:1 Detroit's red
+# (#c8102e, 2.96) fails and the Pistons go grey. Checked on all 30 teams 2026-11-04:
+# 16 primaries are too dark (Brooklyn and San Antonio are #000000), and three teams
+# are hand-picked below instead:
+#   MIA - both colours fail (#98002e, #000000), so it would be the grey fallback;
+#   NY, PHX - the alternate is orange, and orange in this tool means "wants your
+#             attention" (corrections, feed and rate-limit warnings). A permanently
+#             orange header on every Knicks game would dilute that.
+TEAM_ACCENT_OVERRIDES = {"MIA": "#e0405a", "NY": "#3a78e0", "PHX": "#8b6fe0"}
+ACCENT_MIN_CONTRAST = 2.0
+ACCENT_FALLBACK = "#8a93a3"
 
 # On-floor panel (top of the Live tab). How many recent substitutions to list under
 # each team's five, and how many pairs of one simultaneous change can highlight at
@@ -251,21 +265,27 @@ CSS = """
 /* --- game header ---------------------------------------------------------
    The one block that answers "what am I looking at": both teams, both scores,
    period, clock, and when the feed last came back. Grid rather than flex so the
-   scores stay put as the clock text changes width. */
+   scores stay put as the clock text changes width. The 5px edge on each side is the
+   team's accent (`team_accent`), set per game through --away / --home on the div;
+   transparent if the feed sent no colours. */
 .gh {
-  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px;
-  padding: 12px 18px; margin: 0 0 10px 0; border-radius: 12px;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px;
+  padding: 14px 26px; margin: 0 0 10px 0; border-radius: 12px;
   background: rgba(128,128,128,0.05);
   border: 1px solid var(--secondary-background-color);
   color: var(--text-color);
+  position: relative; overflow: hidden;
 }
+.gh::before, .gh::after { content: ""; position: absolute; top: 0; bottom: 0; width: 5px; }
+.gh::before { left: 0; background: var(--away, transparent); }
+.gh::after { right: 0; background: var(--home, transparent); }
 /* `center`, not the `baseline` this row used before it carried a logo. Baseline
    alignment puts a replaced element's baseline at its bottom edge, so once the logo is
    taller than the score's ascent it stops sitting next to the text and starts dragging
    the row: measured at 30px, the logo pinned to the top of the row with 28px of dead
-   space underneath it. Centring is also what the row wants on its own terms - a 34px
-   logo, a 34px score and a 16px name have no shared baseline worth keeping. */
-.gh .tm { display: flex; align-items: center; gap: 12px; min-width: 0; }
+   space underneath it. Centring is also what the row wants on its own terms - a 56px
+   logo, a 46px score and a 22px name have no shared baseline worth keeping. */
+.gh .tm { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .gh .tm.h { justify-content: flex-end; }
 /* Team logo, outboard of the name so the two scores stay the innermost thing in the
    block. The size is NOT set here - it comes from the tag's `width`/`height`, written
@@ -277,20 +297,32 @@ CSS = """
    PNGs are RGBA with fully transparent corners (measured), so they composite straight
    onto the panel with nothing behind them. */
 .gh .lg { flex: 0 0 auto; object-fit: contain; }
-.gh .nm { font-size: 16px; font-weight: 800; }
-.gh .sc { font-size: 34px; font-weight: 900; line-height: 1; }
-.gh .mid { text-align: center; }
-.gh .ck { font-size: 20px; font-weight: 800; white-space: nowrap; }
-.gh .pd { font-size: 13px; font-weight: 700; opacity: .7; margin-left: 6px; }
-.gh .up { font-size: 11px; opacity: .55; margin-top: 3px; white-space: nowrap; }
+/* The name is the one thing allowed to give way on a narrow screen ("Portland Trail
+   Blazers" beside a 56px logo and a three-digit score), so it truncates rather than
+   pushing the score out of line. */
+.gh .nm {
+  font-size: 22px; font-weight: 800; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gh .sc { font-size: 46px; font-weight: 900; line-height: 1; margin: 0 10px; flex: 0 0 auto; }
+.gh .mid {
+  text-align: center; padding: 0 40px;
+  border-left: 1px solid rgba(128,128,128,.25); border-right: 1px solid rgba(128,128,128,.25);
+}
+.gh .ck { font-size: 24px; font-weight: 800; white-space: nowrap; }
+.gh .pd { font-size: 14px; font-weight: 700; opacity: .7; margin-left: 6px; }
+.gh .up { font-size: 12px; opacity: .55; margin-top: 3px; white-space: nowrap; }
 
 /* --- compact status line (the normal, nothing-wrong state) ---------------
    The big house banner is kept for every state that needs attention; STATUS: OK
-   does not, and at 22px it was the loudest thing on the page. */
+   does not, and at 22px it was the loudest thing on the page. While a game is
+   tracked it sits in its own column beside the tab strip (`.inrow`), so its bottom
+   margin goes and it must not wrap inside that narrow column. */
 .statusline {
   display: flex; align-items: center; gap: 8px; margin: 0 0 12px 0;
   font-size: 12px; font-weight: 700; color: var(--text-color); opacity: .85;
 }
+.statusline.inrow { margin: 0; white-space: nowrap; }
 .statusline .dot {
   width: 8px; height: 8px; border-radius: 50%; background: #2ecc71; flex: 0 0 auto;
 }
@@ -457,6 +489,69 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
   border-color: #00cc44 !important; background: rgba(0,204,68,0.10);
 }
 
+/* --- Prematch tab ---------------------------------------------------------
+   The 2026-11-04 redesign, built from a mockup the user picked over a house-style
+   alternative: heading bars, pills on every result, a team-colour stripe on each
+   team's row / card / panel. Scoped to Prematch through the classes below - the other
+   tabs keep the plain `.sect` heading and the plain `html_table`. Team colours arrive
+   per element as --c (see `team_accent`). */
+.sect.bar {
+  border-bottom: 0; padding: 0 0 0 10px; font-size: 15px;
+  border-left: 3px solid var(--primary-color, #5b8dd6);
+}
+
+/* Result pills. Text-transform only: the value in the cell is still exactly the
+   market's selection name ("Made 2"), it is just drawn in capitals. */
+.pill {
+  display: inline-block; padding: 2px 10px; border-radius: 12px; min-width: 76px;
+  font-weight: 700; font-size: 12px; text-align: center; white-space: nowrap;
+  text-transform: uppercase; letter-spacing: .02em;
+}
+.pill.g { background: #00cc44; color: #000000; }
+.pill.r { background: #cc2200; color: #ffffff; }
+
+/* The three First Field Goal cards. */
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.mcard {
+  background: var(--secondary-background-color); border: 1px solid rgba(128,128,128,.18);
+  border-radius: 10px; padding: 12px 16px; display: flex; align-items: center; gap: 14px;
+  min-width: 0; color: var(--text-color);
+}
+.mcard svg { flex: 0 0 auto; width: 26px; height: 26px; stroke: currentColor; opacity: .75; }
+.mcard .lbl, .tcard .lbl {
+  font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+  opacity: .6;
+}
+.mcard .val { font-size: 20px; font-weight: 800; margin-top: 1px; }
+
+/* Game / Team First Field Goal: one card each, values in a 2x2 grid. Four across
+   was tried and cut "Ausar Thompson Made 2" to "Ausar Tho..." at a normal width. */
+.tcard {
+  background: var(--secondary-background-color); border: 1px solid rgba(128,128,128,.18);
+  border-left: 4px solid var(--c, transparent); border-radius: 10px;
+  padding: 10px 14px 12px; min-width: 0; color: var(--text-color);
+}
+.tcard .ttl {
+  display: flex; align-items: center; min-height: 24px; margin-bottom: 8px;
+  font-size: 13px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+}
+.tcard .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; }
+.tcard .lbl { font-size: 10px; opacity: .55; }
+/* Wraps rather than truncating: an ellipsis on "Victor Wembanyama Made 3" hides the
+   "Made 3", which is the market. Checked with the real CSS at a 1200px page. */
+.tcard .v { font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.tlg { flex: 0 0 auto; object-fit: contain; vertical-align: middle; margin-right: 10px; }
+
+/* Boxed table + player panel header. */
+.boxed {
+  border: 1px solid rgba(128,128,128,.18); border-radius: 10px; overflow: hidden;
+}
+.phd {
+  display: flex; align-items: center; padding: 9px 14px;
+  background: var(--c, var(--secondary-background-color)); color: var(--fg, #ffffff);
+  font-size: 14px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+}
+
 /* --- tab strip -----------------------------------------------------------
    Cosmetic only - makes the keyed radio in `render_tab_strip` read as a tab
    strip. Scoped to that widget via the .st-key-active_tab wrapper class
@@ -590,6 +685,10 @@ class TeamInfo:
     # change when a function it calls does, so on the reload that first shipped this
     # field a required argument would have raised TypeError on the open game.
     logo: str = ""
+    # ESPN `color` / `alternateColor` as "#rrggbb", or "". Defaulted for the same
+    # reason as `logo`. Read through `team_accent`, never directly.
+    color: str = ""
+    alt_color: str = ""
 
 
 @dataclass(frozen=True)
@@ -701,7 +800,15 @@ def _logo_src(raw: dict) -> str:
     return f"{ESPN_IMG_COMBINER}?img={href}&w={px}&h={px}"
 
 
+def _hex_color(value: Any) -> str:
+    """ESPN's "1d428a" -> "#1d428a"; anything that is not six hex digits -> ""."""
+    text = str(value or "").strip().lstrip("#")
+    return f"#{text.lower()}" if re.fullmatch(r"[0-9a-fA-F]{6}", text) else ""
+
+
 def _team_from_raw(raw: dict) -> TeamInfo:
+    # `color` / `alternateColor` are on the team object in BOTH shapes - scoreboard
+    # competitors and the summary header (checked 2026-11-04) - unlike the logo.
     return TeamInfo(
         team_id=str(raw.get("id", "")),
         abbr=(raw.get("abbreviation") or raw.get("shortDisplayName") or "").upper(),
@@ -709,6 +816,8 @@ def _team_from_raw(raw: dict) -> TeamInfo:
         name=raw.get("name", "") or "",
         display_name=raw.get("displayName") or raw.get("name") or "",
         logo=_logo_src(raw),
+        color=_hex_color(raw.get("color")),
+        alt_color=_hex_color(raw.get("alternateColor")),
     )
 
 
@@ -2407,8 +2516,10 @@ def record_corrections(rows: Sequence[dict], game_id: str) -> list[dict]:
 # SECTION 8 - UI HELPERS
 # ===========================================================================
 
-def sect(text: str) -> None:
-    st.markdown(f'<div class="sect">{html.escape(text)}</div>', unsafe_allow_html=True)
+def sect(text: str, bar: bool = False) -> None:
+    """Section heading. `bar` is the Prematch style (left accent bar, no rule)."""
+    cls = "sect bar" if bar else "sect"
+    st.markdown(f'<div class="{cls}">{html.escape(text)}</div>', unsafe_allow_html=True)
 
 
 def subsect(text: str) -> None:
@@ -2447,7 +2558,131 @@ def _render_cell(value: str) -> str:
     return html.escape(value)
 
 
-def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None) -> None:
+# Result pills for the Prematch tables (`pill_columns`). Only these exact values get
+# one; anything else in a pill column - a dash, a name - renders as it always has.
+_PILL_GREEN = frozenset({"Made", "Made 2", "Made 3", "Score"})
+_PILL_RED = frozenset({"Missed", "Missed 2", "Missed 3", "No Score"})
+
+
+def _pill_cell(value: str) -> str:
+    if value in _PILL_GREEN:
+        return f'<span class="pill g">{html.escape(value)}</span>'
+    if value in _PILL_RED:
+        return f'<span class="pill r">{html.escape(value)}</span>'
+    return _render_cell(value)
+
+
+def _hex_luminance(color: str) -> float:
+    """WCAG relative luminance of "#rrggbb"."""
+    channels = []
+    for i in (1, 3, 5):
+        v = int(color[i:i + 2], 16) / 255
+        channels.append(v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+    r, g, b = channels
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _hex_luminance(a), _hex_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+# What the accent has to stand out against: the theme's secondaryBackgroundColor in
+# .streamlit/config.toml, which is the card and panel fill.
+_ACCENT_AGAINST = "#171b22"
+
+
+def team_accent(team: TeamInfo) -> str:
+    """The team's accent colour: override, else primary, else alternate, else grey.
+
+    See TEAM_ACCENT_OVERRIDES for why the threshold is 2:1 and which teams are
+    hand-picked. A team rehydrated from a dict saved before colours existed has
+    neither field and gets the grey until its game is reloaded.
+    """
+    if team.abbr in TEAM_ACCENT_OVERRIDES:
+        return TEAM_ACCENT_OVERRIDES[team.abbr]
+    for color in (team.color, team.alt_color):
+        if color and _contrast(color, _ACCENT_AGAINST) >= ACCENT_MIN_CONTRAST:
+            return color
+    return ACCENT_FALLBACK
+
+
+def _accent_text(color: str) -> str:
+    """Text colour for a solid fill of `color`: dark on light fills (San Antonio's
+    silver, Indiana's yellow, Brooklyn's white), white on everything else."""
+    return "#101318" if _hex_luminance(color) > 0.3 else "#ffffff"
+
+
+def _small_logo(team: TeamInfo) -> str:
+    """The team's logo at SMALL_LOGO_PX, for table rows and card titles. Same URL as
+    the header's, so the browser already has it."""
+    if not team.logo:
+        return ""
+    return (
+        f'<img class="tlg" src="{html.escape(team.logo, quote=True)}" '
+        f'width="{SMALL_LOGO_PX}" height="{SMALL_LOGO_PX}" alt="">'
+    )
+
+
+def table_html(rows: Sequence[dict], wrap_columns: set[str] | None = None,
+               pill_columns: set[str] | None = None,
+               row_teams: Sequence[TeamInfo] | None = None,
+               center_columns: set[str] | None = None) -> str:
+    """The house table as an HTML string. `html_table` renders it; Prematch embeds it
+    inside its own panels, which have to be ONE st.markdown call to share a box.
+
+    pill_columns:   columns whose Made / Missed / Score / No Score values are pills.
+    row_teams:      one TeamInfo per row; that row's first cell gets the team's
+                    accent stripe and logo.
+    center_columns: centred cells (the pill columns read better centred).
+    """
+    if not rows:
+        return ""
+    wrap_columns = wrap_columns or set()
+    pill_columns = pill_columns or set()
+    center_columns = center_columns or set()
+    # Top for the plain table (a wrapped impact description reads from its first line);
+    # middle once a row carries a pill or a logo, which are taller than the text.
+    valign = "middle" if (pill_columns or row_teams) else "top"
+    headers = list(rows[0].keys())
+    head = "".join(
+        f'<th style="{_TH_STYLE}{" text-align:center;" if h in center_columns else ""}">'
+        f'{html.escape(str(h))}</th>'
+        for h in headers
+    )
+    body = []
+    for i, row in enumerate(rows):
+        bg = "rgba(128,128,128,0.04)" if i % 2 == 0 else "rgba(128,128,128,0.10)"
+        team = row_teams[i] if row_teams and i < len(row_teams) else None
+        cells = []
+        for j, h in enumerate(headers):
+            if h in wrap_columns:
+                sizing = ("white-space:normal; overflow-wrap:break-word; "
+                          "width:100%; min-width:200px; line-height:1.5;")
+            else:
+                sizing = "white-space:nowrap;"
+            if h in center_columns:
+                sizing += " text-align:center;"
+            value = str(row.get(h, ""))
+            content = _pill_cell(value) if h in pill_columns else _render_cell(value)
+            extra = ""
+            if team is not None and j == 0:
+                extra = f" border-left:4px solid {team_accent(team)}; font-weight:700; font-size:14px;"
+                content = _small_logo(team) + content
+            cells.append(
+                f'<td style="padding:5px 14px; font-size:13px; {sizing} '
+                f'vertical-align:{valign}; color:var(--text-color); font-weight:500;{extra}">'
+                f'{content}</td>'
+            )
+        body.append(f'<tr style="background-color:{bg};">{"".join(cells)}</tr>')
+    return (
+        '<div style="overflow-x:auto; width:100%;">'
+        '<table style="width:100%; border-collapse:collapse;">'
+        f'<thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    )
+
+
+def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None, **kwargs) -> None:
     """House HTML table, ported from `nfl_qc_tool/components/tables.py`.
 
     Takes a list of dicts and derives the headers from the first row - the same
@@ -2458,36 +2693,13 @@ def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None) -> No
 
     wrap_columns: columns allowed to wrap onto several lines. Cells default to
     nowrap so short values never break mid-value, but a long impact description
-    would otherwise force horizontal scrolling.
+    would otherwise force horizontal scrolling. The Prematch-only options are
+    documented on `table_html`.
     """
     if not rows:
         st.info("No data.")
         return
-    wrap_columns = wrap_columns or set()
-    headers = list(rows[0].keys())
-    head = "".join(f'<th style="{_TH_STYLE}">{html.escape(str(h))}</th>' for h in headers)
-    body = []
-    for i, row in enumerate(rows):
-        bg = "rgba(128,128,128,0.04)" if i % 2 == 0 else "rgba(128,128,128,0.10)"
-        cells = []
-        for h in headers:
-            if h in wrap_columns:
-                sizing = ("white-space:normal; overflow-wrap:break-word; "
-                          "width:100%; min-width:200px; line-height:1.5;")
-            else:
-                sizing = "white-space:nowrap;"
-            cells.append(
-                f'<td style="padding:5px 14px; font-size:13px; {sizing} '
-                f'vertical-align:top; color:var(--text-color); font-weight:500;">'
-                f'{_render_cell(str(row.get(h, "")))}</td>'
-            )
-        body.append(f'<tr style="background-color:{bg};">{"".join(cells)}</tr>')
-    st.markdown(
-        '<div style="overflow-x:auto; width:100%;">'
-        '<table style="width:100%; border-collapse:collapse;">'
-        f'<thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(table_html(rows, wrap_columns, **kwargs), unsafe_allow_html=True)
 
 
 def _anchor_text(score: tuple[int, int]) -> str:
@@ -2666,14 +2878,16 @@ def warning_box(message: str, warning_type: str = "ok") -> None:
     )
 
 
-def status_line(message: str) -> None:
+def status_line(message: str, inrow: bool = False) -> None:
     """The compact form of the banner, for the state that needs no attention.
 
     `warning_box` is kept for every state that does. `message` is injected as
     HTML, exactly as there, so callers escape feed-derived text themselves.
+    `inrow` when it shares a row with the tab strip (no bottom margin, no wrap).
     """
+    cls = "statusline inrow" if inrow else "statusline"
     st.markdown(
-        f'<div class="statusline"><span class="dot"></span>{message}</div>',
+        f'<div class="{cls}"><span class="dot"></span>{message}</div>',
         unsafe_allow_html=True,
     )
 
@@ -2710,8 +2924,9 @@ def game_header(game: GameInfo, clock_text: str, period_text: str, updated: str)
     period = (
         f'<span class="pd">{html.escape(period_text)}</span>' if period_text else ""
     )
+    edges = f"--away:{team_accent(game.away)}; --home:{team_accent(game.home)};"
     st.markdown(
-        '<div class="gh">'
+        f'<div class="gh" style="{edges}">'
         f'<div class="tm">{_logo_tag(game.away)}'
         f'<span class="nm">{html.escape(game.away.display_name)}</span>'
         f'<span class="sc">{game.away_score}</span></div>'
@@ -3184,40 +3399,102 @@ def _first_event_rows(events: Sequence[GameEvent], game: GameInfo) -> list[dict]
     ]
 
 
+# Inline icons for the three First Field Goal cards, in the order of
+# `game_first_fg_row`'s columns: Exact (target), Team (people), Type (stacked
+# layers). Inline SVG, so no asset files; `stroke: currentColor` in the CSS colours
+# them from the theme.
+_FG_CARD_ICONS = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="8"/>'
+    '<circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/>'
+    '<path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/>'
+    '<path d="M16 14.2c2.8.3 5 2.6 5 5.8"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 3 2 8l10 5 10-5-10-5z"/>'
+    '<path d="m2 13 10 5 10-5"/><path d="m2 17.5 10 5 10-5" opacity=".6"/></svg>',
+)
+
+
+def market_cards(row: dict[str, str]) -> None:
+    """One card per market in `row` (label -> value), with its icon."""
+    cards = "".join(
+        f'<div class="mcard">{icon}<div><div class="lbl">{html.escape(label)}</div>'
+        f'<div class="val">{_render_cell(value)}</div></div></div>'
+        for icon, (label, value) in zip(_FG_CARD_ICONS, row.items())
+    )
+    st.markdown(f'<div class="cards">{cards}</div>', unsafe_allow_html=True)
+
+
+def first_event_cards(rows: Sequence[dict], teams: Sequence[TeamInfo | None]) -> None:
+    """`_first_event_rows` as three cards, values in a 2x2 grid. The row's "Team"
+    value is the card title; a None team is the Game First card, which takes the
+    theme's primary colour and no logo."""
+    cards = []
+    for row, team in zip(rows, teams):
+        accent = team_accent(team) if team else "var(--primary-color, #5b8dd6)"
+        logo = _small_logo(team) if team else ""
+        cells = "".join(
+            f'<div><div class="lbl">{html.escape(k)}</div><div class="v">{_render_cell(str(v))}</div></div>'
+            for k, v in row.items() if k != "Team"
+        )
+        cards.append(
+            f'<div class="tcard" style="--c:{accent};">'
+            f'<div class="ttl">{logo}{html.escape(str(row.get("Team", "")))}</div>'
+            f'<div class="grid">{cells}</div></div>'
+        )
+    st.markdown(f'<div class="cards">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+
+def player_panel(team: TeamInfo, rows: Sequence[dict]) -> None:
+    """A team's starters table under a solid team-colour header, in one box. One
+    st.markdown call, because Streamlit wraps each call in its own container and a
+    box opened in one cannot close in the next."""
+    accent = team_accent(team)
+    header = (
+        f'<div class="phd" style="--c:{accent}; --fg:{_accent_text(accent)};">'
+        f'{_small_logo(team)}{html.escape(team.display_name)} Players</div>'
+    )
+    result_cols = {k for k in (rows[0] if rows else {}) if k != "Player"}
+    body = table_html(rows, pill_columns=result_cols, center_columns=result_cols) if rows else ""
+    st.markdown(f'<div class="boxed">{header}{body}</div>', unsafe_allow_html=True)
+
+
 def render_prematch_tab(tg: TrackedGame) -> None:
     game = tg.game
-
-    sect("First Field Goal")
-    html_table([game_first_fg_row(tg.events, game.away.team_id, game.home.team_id)])
-
-    sect("Team First Possession / Field Goal")
     away_id, home_id = game.away.team_id, game.home.team_id
-    html_table([
-        {"Team": game.away.display_name, **team_first_row(tg.events, away_id, home_id)},
-        {"Team": game.home.display_name, **team_first_row(tg.events, home_id, away_id)},
-    ])
 
-    sect("Game / Team First Field Goal")
+    sect("First Field Goal", bar=True)
+    market_cards(game_first_fg_row(tg.events, away_id, home_id))
+
+    sect("Team First Possession / Field Goal", bar=True)
+    pills = {"Possession Grouped", "First FG Attempt"}
+    st.markdown(
+        '<div class="boxed">' + table_html(
+            [
+                {"Team": game.away.display_name, **team_first_row(tg.events, away_id, home_id)},
+                {"Team": game.home.display_name, **team_first_row(tg.events, home_id, away_id)},
+            ],
+            pill_columns=pills, center_columns=pills, row_teams=[game.away, game.home],
+        ) + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    sect("Game / Team First Field Goal", bar=True)
     # First Dunk resolves on the first MADE dunk, classified from the feed's shot type
     # ("Driving Dunk Shot" etc). Limitations are in the README, not on screen.
-    html_table(_first_event_rows(tg.events, game))
+    first_event_cards(_first_event_rows(tg.events, game), [None, game.away, game.home])
 
-    sect("Player First Shot — Starters")
+    sect("Player First Shot — Starters", bar=True)
     left, right = st.columns(2, gap="medium")
     for col, team, starters, source in (
         (left, game.away, tg.away_starters, tg.away_starter_source),
         (right, game.home, tg.home_starters, tg.home_starter_source),
     ):
         with col:
-            subsect(f"{team.display_name} Players")
-            if not starters:
-                note("Lineup not available yet.")
-                continue
-            html_table([
+            player_panel(team, [
                 {"Player": p.name, **player_first_shot_row(tg.events, p.player_id)}
                 for p in starters
             ])
-            note(f"Lineup source: {source}")
+            note(f"Lineup source: {source}" if starters else "Lineup not available yet.")
 
 
 def _jersey_num(jersey: str) -> int:
@@ -3718,21 +3995,28 @@ def main() -> None:
         clock_text, period_text = last.clock_display, period_label(last.period)
     game_header(game, clock_text, period_text, st.session_state.last_fetch_ok or "")
 
-    # One status, above the tab strip, exactly where the other tools place it.
-    # Anything that needs attention keeps the house banner; STATUS: OK does not,
-    # so it drops to a single compact line.
     message, kind = banner_state()
+    # One status, exactly where the other tools place it. STATUS: OK is a compact line
+    # on the tab strip's row; anything that needs attention keeps the
+    # full-width banner above it. The status column is wider when the line carries
+    # a corrections count, so it does not wrap.
     if kind == "ok":
-        status_line(message)
+        logged = bool(st.session_state.corrections)
+        status_col, tab_col = st.columns([2, 5] if logged else [1, 8],
+                                         vertical_alignment="center")
+        with status_col:
+            status_line(message, inrow=True)
+        with tab_col:
+            active = render_tab_strip()
     else:
         warning_box(message, kind)
+        active = render_tab_strip()
 
     if game.state == "pre":
         note("Game has not started. Prematch tables will populate from the first play.")
     elif not tg.events and st.session_state.last_error is None:
         note("Play-by-play is not published for this game yet.")
 
-    active = render_tab_strip()
     if active == TAB_PREMATCH:
         render_prematch_tab(tg)
     elif active == TAB_LIVE:
