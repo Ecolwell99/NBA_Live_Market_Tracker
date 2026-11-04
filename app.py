@@ -169,8 +169,8 @@ ACCENT_FALLBACK = "#8a93a3"
 FLOOR_RECENT_SUBS = 3
 SUB_HIGHLIGHT_MAX = 6
 
-# Timeframe table ordering. "chronological" -> 12:00-11:01 first (matches the
-# written spec). "reverse" -> 1:00-0:00 first (matches the mock-up sheet).
+# Timeframe table ordering. "chronological" -> 11:59-11:00 first (matches the
+# written spec). "reverse" -> 0:59-0:00 first (matches the mock-up sheet).
 TIMEFRAME_ORDER = "chronological"
 
 # Regulation / overtime period lengths in seconds.
@@ -1870,16 +1870,17 @@ def latest_made_fg(events: Sequence[GameEvent], player_id: str) -> GameEvent | N
 def timeframe_windows(period: int) -> list[tuple[str, int, int]]:
     """One-minute windows for a period as (label, high_seconds, low_seconds).
 
-    A window covers game clock in (low, high]; the final window is inclusive of
-    0.0 so a buzzer-beater lands in "1:00-0:00".
+    A window covers game clock in [low, high) and is labelled lower-bound
+    inclusive: "11:59-11:00", "10:59-10:00", ... "0:59-0:00". A score at exactly
+    11:00 belongs to "11:59-11:00". The opening 12:00 itself is folded into the
+    first window (see `window_index`).
     """
     total = period_seconds(period)
     out: list[tuple[str, int, int]] = []
     for i in range(total // 60):
         high = total - i * 60
         low = high - 60
-        low_label = "0:00" if low == 0 else _clock_label(low + 1)
-        out.append((f"{_clock_label(high)}-{low_label}", high, low))
+        out.append((f"{_clock_label(high - 1)}-{_clock_label(low)}", high, low))
     return out
 
 
@@ -1890,15 +1891,18 @@ def _clock_label(seconds: int) -> str:
 def window_index(clock_seconds: float, period: int) -> int | None:
     """Which one-minute window a clock reading belongs to.
 
-    12:00 (720s) -> window 0 ("12:00-11:01")
-    11:01 (661s) -> window 0
-    11:00 (660s) -> window 1 ("11:00-10:01")   labels are upper-bound inclusive
-    51.7s        -> window 11 ("1:00-0:00")
+    12:00 (720s) -> window 0 ("11:59-11:00")   folded into the first window
+    11:59 (719s) -> window 0
+    11:00 (660s) -> window 0                   labels are lower-bound inclusive
+    10:59 (659s) -> window 1 ("10:59-10:00")
+    1:00  (60s)  -> window 10 ("1:59-1:00")
+    51.7s        -> window 11 ("0:59-0:00")
     """
     total = period_seconds(period)
     if clock_seconds is None or clock_seconds > total or clock_seconds < 0:
         return None
-    return min(total // 60 - 1, int((total - clock_seconds) // 60))
+    last = total // 60 - 1
+    return max(0, last - int(clock_seconds // 60))
 
 
 def period_progress(events: Sequence[GameEvent], period: int) -> tuple[float | None, bool]:
@@ -1955,8 +1959,9 @@ def timeframe_table(events: Sequence[GameEvent], period: int, away_id: str, home
     rows: list[dict[str, str]] = []
     for idx, (label, _high, low) in enumerate(windows):
         both = away_id in scored[idx] and home_id in scored[idx]
-        # The window is complete once the clock has run down to its lower bound.
-        complete = finished or (lowest is not None and lowest <= low)
+        # The window is complete once the clock has run PAST its lower bound: a
+        # stoppage at exactly 11:00 can still produce free throws for "11:59-11:00".
+        complete = finished or (lowest is not None and lowest < low)
         if both:
             verdict = "Yes"
         elif complete:

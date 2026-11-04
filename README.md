@@ -362,9 +362,13 @@ re-flash the same correction; it stays visible for `CORRECTION_BANNER_SECONDS`
 
 ### 4.4 Timeframe Both Teams To Score
 
-- Windows are **upper-bound inclusive**: `12:00` lands in `12:00–11:01`, `11:01`
-  lands in `12:00–11:01`, `11:00` lands in `11:00–10:01`. `int((720 - clock) // 60)`.
-- The final window `1:00–0:00` is inclusive of `0.0`, so a buzzer-beater counts.
+- Windows are **lower-bound inclusive** (changed 2026-11-04 to match the market):
+  `11:59–11:00`, `10:59–10:00`, … `0:59–0:00`. `11:00` lands in `11:59–11:00`,
+  `10:59` lands in `10:59–10:00`. `11 - int(clock // 60)`; the opening `12:00` is
+  folded into the first window.
+- The final window `0:59–0:00` includes `0.0`, so a buzzer-beater counts.
+- A window is complete only once the clock goes **below** its lower bound, so
+  free throws taken at exactly `11:00` still settle `11:59–11:00`.
 - Any **made** score counts — field goal or free throw — which is what the market
   prices.
 - A window shows `-` until it is fully complete, then `Yes` or `No`. Completion is
