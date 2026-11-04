@@ -240,9 +240,11 @@ CSS = """
 [data-testid="stMetricDelta"] svg { display: none; }
 
 /* --- section labels ------------------------------------------------------
-   Full contrast (no opacity), uppercase, and a hairline rule underneath - that
-   is the whole treatment. No accent bar: it was one more coloured thing to look
-   past on a screen that is read at a glance.
+   Full contrast, uppercase, with a 3px accent bar on the left in the theme's primary
+   blue. The bar was removed once (2026-09-08, "a distraction") and came back
+   tool-wide on 2026-11-04, when the user picked a mockup that carried it and then
+   asked for the whole tool to match. Blue, never the tab strip's red, which reads as
+   a warning on a heading.
 
    The top margin is unconditional. It used to be overridden by
    `.sect:first-child { margin-top: 4px }`, which was meant for the first heading
@@ -251,11 +253,12 @@ CSS = """
    was therefore whatever the element above happened to leave, which is why some
    sections sat tight against the block above them and others did not. */
 .sect {
-  font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+  font-size: 15px; text-transform: uppercase; letter-spacing: .06em;
   font-weight: 800; color: var(--text-color);
-  margin: 20px 0 8px 0; padding: 0 0 5px 0;
-  border-bottom: 1px solid var(--secondary-background-color);
+  margin: 20px 0 8px 0; padding: 0 0 0 10px;
+  border-left: 3px solid var(--primary-color, #5b8dd6);
 }
+/* Plain team label - now only the sidebar key-player editor; the tabs use banners. */
 .subsect {
   font-size: 13px; font-weight: 800; color: var(--text-color);
   letter-spacing: .01em; margin: 10px 0 5px 0;
@@ -372,7 +375,7 @@ CSS = """
    and green / red for on / off is the same language as .frow.made / .frow.miss
    and the timeframe Yes / No. Greens and reds are the existing ones. */
 .lu {
-  border: 1px solid var(--secondary-background-color); border-radius: 10px;
+  border: 1px solid rgba(128,128,128,.18); border-radius: 10px;
   overflow: hidden; margin: 2px 0 4px 0;
 }
 .lurow {
@@ -489,16 +492,11 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
   border-color: #00cc44 !important; background: rgba(0,204,68,0.10);
 }
 
-/* --- Prematch tab ---------------------------------------------------------
-   The 2026-11-04 redesign, built from a mockup the user picked over a house-style
-   alternative: heading bars, pills on every result, a team-colour stripe on each
-   team's row / card / panel. Scoped to Prematch through the classes below - the other
-   tabs keep the plain `.sect` heading and the plain `html_table`. Team colours arrive
-   per element as --c (see `team_accent`). */
-.sect.bar {
-  border-bottom: 0; padding: 0 0 0 10px; font-size: 15px;
-  border-left: 3px solid var(--primary-color, #5b8dd6);
-}
+/* --- cards, pills, team banners ------------------------------------------
+   The 2026-11-04 redesign, built on Prematch from a mockup the user picked and then
+   rolled out to every tab so the tool reads as one thing: pills on results, a
+   team-colour stripe / banner on each team's row, card and panel. Team colours
+   arrive per element as --c (see `team_accent`). */
 
 /* Result pills. Text-transform only: the value in the cell is still exactly the
    market's selection name ("Made 2"), it is just drawn in capitals. */
@@ -548,9 +546,15 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
 }
 .phd {
   display: flex; align-items: center; padding: 9px 14px;
+  /* Same height with or without a logo (24px + padding). border-box stated, not
+     assumed, so the 42 means the same thing in Streamlit as anywhere else. */
+  box-sizing: border-box; min-height: 42px;
   background: var(--c, var(--secondary-background-color)); color: var(--fg, #ffffff);
   font-size: 14px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
 }
+/* A banner standing on its own, above content that is not in its box (the feed
+   rows, the key player cards - Streamlit containers, which our HTML cannot wrap). */
+.phd.solo { border-radius: 10px; margin: 2px 0 6px 0; }
 
 /* --- tab strip -----------------------------------------------------------
    Cosmetic only - makes the keyed radio in `render_tab_strip` read as a tab
@@ -2516,14 +2520,8 @@ def record_corrections(rows: Sequence[dict], game_id: str) -> list[dict]:
 # SECTION 8 - UI HELPERS
 # ===========================================================================
 
-def sect(text: str, bar: bool = False) -> None:
-    """Section heading. `bar` is the Prematch style (left accent bar, no rule)."""
-    cls = "sect bar" if bar else "sect"
-    st.markdown(f'<div class="{cls}">{html.escape(text)}</div>', unsafe_allow_html=True)
-
-
-def subsect(text: str) -> None:
-    st.markdown(f'<div class="subsect">{html.escape(text)}</div>', unsafe_allow_html=True)
+def sect(text: str) -> None:
+    st.markdown(f'<div class="sect">{html.escape(text)}</div>', unsafe_allow_html=True)
 
 
 def note(text: str) -> None:
@@ -2682,7 +2680,8 @@ def table_html(rows: Sequence[dict], wrap_columns: set[str] | None = None,
     )
 
 
-def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None, **kwargs) -> None:
+def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None,
+               boxed: bool = False, **kwargs) -> None:
     """House HTML table, ported from `nfl_qc_tool/components/tables.py`.
 
     Takes a list of dicts and derives the headers from the first row - the same
@@ -2693,13 +2692,17 @@ def html_table(rows: Sequence[dict], wrap_columns: set[str] | None = None, **kwa
 
     wrap_columns: columns allowed to wrap onto several lines. Cells default to
     nowrap so short values never break mid-value, but a long impact description
-    would otherwise force horizontal scrolling. The Prematch-only options are
+    would otherwise force horizontal scrolling. boxed: inside the rounded `.boxed`
+    frame the Prematch tables use. The other options are
     documented on `table_html`.
     """
     if not rows:
         st.info("No data.")
         return
-    st.markdown(table_html(rows, wrap_columns, **kwargs), unsafe_allow_html=True)
+    body = table_html(rows, wrap_columns, **kwargs)
+    if boxed:
+        body = f'<div class="boxed">{body}</div>'
+    st.markdown(body, unsafe_allow_html=True)
 
 
 def _anchor_text(score: tuple[int, int]) -> str:
@@ -3427,10 +3430,10 @@ def market_cards(row: dict[str, str]) -> None:
 def first_event_cards(rows: Sequence[dict], teams: Sequence[TeamInfo | None]) -> None:
     """`_first_event_rows` as three cards, values in a 2x2 grid. The row's "Team"
     value is the card title; a None team is the Game First card, which takes the
-    theme's primary colour and no logo."""
+    neutral slate and no logo."""
     cards = []
     for row, team in zip(rows, teams):
-        accent = team_accent(team) if team else "var(--primary-color, #5b8dd6)"
+        accent = team_accent(team) if team else _NEUTRAL_ACCENT
         logo = _small_logo(team) if team else ""
         cells = "".join(
             f'<div><div class="lbl">{html.escape(k)}</div><div class="v">{_render_cell(str(v))}</div></div>'
@@ -3444,15 +3447,35 @@ def first_event_cards(rows: Sequence[dict], teams: Sequence[TeamInfo | None]) ->
     st.markdown(f'<div class="cards">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
-def player_panel(team: TeamInfo, rows: Sequence[dict]) -> None:
-    """A team's starters table under a solid team-colour header, in one box. One
+# For a banner that is no one team's (Made Field Goals). Slate, not the theme blue: the
+# blue is within a shade of the Knicks' accent (#3a78e0), so in a Knicks game the
+# mixed panel read as a third Knicks panel.
+_NEUTRAL_ACCENT = "#3a4250"
+
+
+def banner_html(title: str, team: TeamInfo | None = None, solo: bool = False) -> str:
+    """A solid banner: the team's accent fill and logo, or the neutral blue with no
+    logo when `team` is None (the Made Field Goals panel, which mixes both teams).
+    `solo` rounds it for use on its own, outside a `.boxed` / `.lu` box."""
+    accent = team_accent(team) if team else _NEUTRAL_ACCENT
+    logo = _small_logo(team) if team else ""
+    cls = "phd solo" if solo else "phd"
+    return (
+        f'<div class="{cls}" style="--c:{accent}; --fg:{_accent_text(accent)};">'
+        f'{logo}{html.escape(title)}</div>'
+    )
+
+
+def team_banner(team: TeamInfo | None, title: str = "") -> None:
+    st.markdown(banner_html(title or (team.display_name if team else ""), team, solo=True),
+                unsafe_allow_html=True)
+
+
+def player_panel(team: TeamInfo, rows: Sequence[dict], title: str = "") -> None:
+    """A team's player table under its banner, in one box, every result a pill. One
     st.markdown call, because Streamlit wraps each call in its own container and a
     box opened in one cannot close in the next."""
-    accent = team_accent(team)
-    header = (
-        f'<div class="phd" style="--c:{accent}; --fg:{_accent_text(accent)};">'
-        f'{_small_logo(team)}{html.escape(team.display_name)} Players</div>'
-    )
+    header = banner_html(title or f"{team.display_name} Players", team)
     result_cols = {k for k in (rows[0] if rows else {}) if k != "Player"}
     body = table_html(rows, pill_columns=result_cols, center_columns=result_cols) if rows else ""
     st.markdown(f'<div class="boxed">{header}{body}</div>', unsafe_allow_html=True)
@@ -3462,10 +3485,10 @@ def render_prematch_tab(tg: TrackedGame) -> None:
     game = tg.game
     away_id, home_id = game.away.team_id, game.home.team_id
 
-    sect("First Field Goal", bar=True)
+    sect("First Field Goal")
     market_cards(game_first_fg_row(tg.events, away_id, home_id))
 
-    sect("Team First Possession / Field Goal", bar=True)
+    sect("Team First Possession / Field Goal")
     pills = {"Possession Grouped", "First FG Attempt"}
     st.markdown(
         '<div class="boxed">' + table_html(
@@ -3478,12 +3501,12 @@ def render_prematch_tab(tg: TrackedGame) -> None:
         unsafe_allow_html=True,
     )
 
-    sect("Game / Team First Field Goal", bar=True)
+    sect("Game / Team First Field Goal")
     # First Dunk resolves on the first MADE dunk, classified from the feed's shot type
     # ("Driving Dunk Shot" etc). Limitations are in the README, not on screen.
     first_event_cards(_first_event_rows(tg.events, game), [None, game.away, game.home])
 
-    sect("Player First Shot — Starters", bar=True)
+    sect("Player First Shot — Starters")
     left, right = st.columns(2, gap="medium")
     for col, team, starters, source in (
         (left, game.away, tg.away_starters, tg.away_starter_source),
@@ -3585,9 +3608,9 @@ def render_floor_panel(tg: TrackedGame) -> None:
     ):
         with col:
             floor = team_floor(tg.events, team.team_id, starters)
-            subsect(team.display_name)
 
             if not floor.on_floor:
+                team_banner(team)
                 note("Lineup not available yet.")
                 continue
 
@@ -3602,7 +3625,9 @@ def render_floor_panel(tg: TrackedGame) -> None:
                     key=lambda e: (_jersey_num(jersey_by_id.get(e.player_id, "")), e.name),
                 )
             )
-            st.markdown(f'<div class="lu">{rows}</div>', unsafe_allow_html=True)
+            # The banner is inside the box, as on the Prematch player panels.
+            st.markdown(f'<div class="lu">{banner_html(team.display_name, team)}{rows}</div>',
+                        unsafe_allow_html=True)
             render_recent_subs(tg.events, team.team_id)
 
             # Silent while the five are trustworthy, which is the normal case.
@@ -3663,7 +3688,7 @@ def render_live_tab(tg: TrackedGame) -> None:
     k_away, k_home = st.columns(2, gap="medium")
     for col, side, team in ((k_away, "away", away), (k_home, "home", home)):
         with col:
-            subsect(team.display_name)
+            team_banner(team)
             for pid in st.session_state.key_players.get(side) or []:
                 key_player_card(
                     tg, pid, name_by_id.get(pid) or _name_of(pid, tg.events) or pid
@@ -3677,13 +3702,13 @@ def render_live_tab(tg: TrackedGame) -> None:
     # away-home, as everywhere else in the tool.
     c_away, c_made, c_home = st.columns(3, gap="medium")
     with c_away:
-        subsect(away.display_name)
+        team_banner(away)
         render_feed(
             recent_fg_market_events(tg.events, tg.abbr_for, away.team_id, RECENT_FG_COUNT),
             "No field goal attempts yet.",
         )
     with c_made:
-        subsect("Made Field Goals")
+        team_banner(None, "Made Field Goals")
         # The only panel that mixes teams, so the only one that needs the abbreviation.
         render_feed(
             recent_fg_market_events(
@@ -3693,7 +3718,7 @@ def render_live_tab(tg: TrackedGame) -> None:
             include_team=True,
         )
     with c_home:
-        subsect(home.display_name)
+        team_banner(home)
         render_feed(
             recent_fg_market_events(tg.events, tg.abbr_for, home.team_id, RECENT_FG_COUNT),
             "No field goal attempts yet.",
@@ -3739,7 +3764,8 @@ def render_live_tab(tg: TrackedGame) -> None:
     if tg.max_period < 3:
         note("Activates when the third quarter begins.")
     else:
-        html_table(_first_event_rows([e for e in tg.events if e.period >= 3], game))
+        first_event_cards(_first_event_rows([e for e in tg.events if e.period >= 3], game),
+                          [None, game.away, game.home])
 
 
 def render_quarter_player_tab(tg: TrackedGame) -> None:
@@ -3754,16 +3780,17 @@ def render_quarter_player_tab(tg: TrackedGame) -> None:
         left, right = st.columns(2, gap="medium")
         for col, side, team in ((left, "away", game.away), (right, "home", game.home)):
             with col:
-                subsect(f"{team.display_name} Key Players")
+                title = f"{team.display_name} Key Players"
                 pids = [p for p in st.session_state.key_players.get(side) or [] if p]
                 if not pids:
+                    team_banner(team, title)
                     note("No key players selected.")
                     continue
-                html_table([
+                player_panel(team, [
                     {"Player": name_by_id.get(pid) or _name_of(pid, tg.events) or pid,
                      **player_quarter_shot_row(tg.events, pid, period)}
                     for pid in pids
-                ])
+                ], title)
 
 
 def render_corrections_tab() -> None:
@@ -3791,7 +3818,8 @@ def render_corrections_tab() -> None:
         return
 
     html_table(
-        [
+        boxed=True,
+        rows=[
             {
                 "Detected": r["detected_display"],
                 "Period": period_label(r["period"]),
