@@ -395,6 +395,9 @@ CSS = """
   border: 1px solid rgba(223,228,236,.45); border-radius: 4px;
   font-size: 10px; font-weight: 800; line-height: 15px; opacity: .8;
 }
+/* Key player star: grey, before the name (the user's pick). Not green or orange,
+   which already mean came on / wants attention. */
+.lurow .kpstar { opacity: .6; margin-right: 6px; font-size: 12px; }
 .lurow .cl { margin-left: auto; font-size: 12px; font-weight: 700; opacity: .75; }
 /* After the striping, so an entering player wins on equal specificity. */
 .lurow.in { border-left-color: #6fd68d; }
@@ -3536,10 +3539,11 @@ def _jersey_num(jersey: str) -> int:
     return int(jersey) if jersey.isdigit() else 999
 
 
-def _lineup_row(entry: FloorEntry, jersey: str, entering: bool, starter: bool = False) -> str:
-    """One player row. Full name, shirt number, a small grey "S" chip after the name
-    of a starter, and - for the player who just came on - a green up arrow and the
-    clock they came on at.
+def _lineup_row(entry: FloorEntry, jersey: str, entering: bool, starter: bool = False,
+                key: bool = False) -> str:
+    """One player row. Full name, shirt number, a grey star before the name of a key
+    player, a small grey "S" chip after the name of a starter, and - for the player
+    who just came on - a green up arrow and the clock they came on at.
 
     The arrow slot is emitted on every row, empty where there is nothing to mark,
     so the shirt numbers stay in one column and the five do not shuffle sideways
@@ -3550,6 +3554,7 @@ def _lineup_row(entry: FloorEntry, jersey: str, entering: bool, starter: bool = 
     num = f"#{jersey}" if jersey else DASH
     arrow = f'<span class="arw in">{ARROW_IN}</span>' if entering else '<span class="arw"></span>'
     chip = '<span class="st">S</span>' if starter else ""
+    star = '<span class="kpstar">★</span>' if key else ""
     when = (
         f'<span class="cl">{html.escape(entry.clock_display)} '
         f'{html.escape(period_label(entry.period))}</span>'
@@ -3559,7 +3564,7 @@ def _lineup_row(entry: FloorEntry, jersey: str, entering: bool, starter: bool = 
     return (
         f'<div class="lurow{" in" if entering else ""}">{arrow}'
         f'<span class="num">{html.escape(num)}</span>'
-        f'<span class="nm">{html.escape(entry.name)}{chip}</span>{when}</div>'
+        f'<span class="nm">{star}{html.escape(entry.name)}{chip}</span>{when}</div>'
     )
 
 
@@ -3609,6 +3614,10 @@ def render_floor_panel(tg: TrackedGame) -> None:
     game = tg.game
     jersey_by_id = tg.jersey_by_id
     entering = {ev.sub_in_id for ev in latest_substitutions(tg.events)}
+    # Read fresh on every rerun, so changing a key player moves the star on the rerun
+    # the change itself causes - no extra request (fetch_summary is cached).
+    key_ids = {pid for side in ("away", "home")
+               for pid in st.session_state.key_players.get(side) or [] if pid}
 
     sect("On The Floor")
     left, right = st.columns(2, gap="medium")
@@ -3631,6 +3640,7 @@ def render_floor_panel(tg: TrackedGame) -> None:
                     jersey_by_id.get(entry.player_id, ""),
                     entry.player_id in entering,
                     entry.player_id in starter_ids,
+                    entry.player_id in key_ids,
                 )
                 for entry in sorted(
                     floor.on_floor,
