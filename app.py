@@ -1395,7 +1395,7 @@ def first_event_row(events: Sequence[GameEvent], team_id: str | None = None) -> 
     """First FG Exact / First FG Scorer / First 3 Make / First Dunk.
 
     Backs: (Prematch|Second Half) [Team] First Field Goal Scorer (Exact),
-    First 3pt Scorer, First Dunk Scorer, Field Goal Exact/Team/Type.
+    First 3pt Scorer, First Dunk Scorer.
     """
     def mine(ev: GameEvent) -> bool:
         return team_id is None or ev.team_id == team_id
@@ -1409,6 +1409,24 @@ def first_event_row(events: Sequence[GameEvent], team_id: str | None = None) -> 
         "First FG Scorer": (fg.player_name or DASH) if fg else DASH,
         "First 3 Make": (three.player_name or DASH) if three else DASH,
         "First Dunk": (dunk.player_name or DASH) if dunk else DASH,
+    }
+
+
+def game_first_fg_row(events: Sequence[GameEvent], away_id: str, home_id: str) -> dict[str, str]:
+    """First FG Exact / First FG Team / First FG Type for the whole game.
+
+    Backs: Prematch First Field Goal Exact (Home/Away Made 2/3), First Field Goal
+    Team (Home/Away), First Field Goal Type (Made 2/Made 3). Selections are named
+    Home / Away, so that is what the cells say rather than the team name.
+    """
+    fg = _first(events, lambda e: e.kind == KIND_FG and e.made)
+    side = {away_id: "Away", home_id: "Home"}.get(fg.team_id, "") if fg else ""
+    if not side:
+        return {"First FG Exact": DASH, "First FG Team": DASH, "First FG Type": DASH}
+    return {
+        "First FG Exact": f"{side} Made {fg.points}",
+        "First FG Team": side,
+        "First FG Type": f"Made {fg.points}",
     }
 
 
@@ -3065,6 +3083,9 @@ def _first_event_rows(events: Sequence[GameEvent], game: GameInfo) -> list[dict]
 
 def render_prematch_tab(tg: TrackedGame) -> None:
     game = tg.game
+
+    sect("First Field Goal")
+    html_table([game_first_fg_row(tg.events, game.away.team_id, game.home.team_id)])
 
     sect("Game / Team First Field Goal")
     # First Dunk resolves on the first MADE dunk, classified from the feed's shot type
