@@ -389,6 +389,12 @@ CSS = """
   min-width: 30px; text-align: right; font-size: 12px; font-weight: 800; opacity: .55;
 }
 .lurow .nm { font-weight: 700; }
+/* Starter chip: small grey outlined "S" after the name. */
+.lurow .st {
+  display: inline-block; margin-left: 8px; padding: 0 5px; vertical-align: 1px;
+  border: 1px solid rgba(223,228,236,.45); border-radius: 4px;
+  font-size: 10px; font-weight: 800; line-height: 15px; opacity: .8;
+}
 .lurow .cl { margin-left: auto; font-size: 12px; font-weight: 700; opacity: .75; }
 /* After the striping, so an entering player wins on equal specificity. */
 .lurow.in { border-left-color: #6fd68d; }
@@ -3530,16 +3536,20 @@ def _jersey_num(jersey: str) -> int:
     return int(jersey) if jersey.isdigit() else 999
 
 
-def _lineup_row(entry: FloorEntry, jersey: str, entering: bool) -> str:
-    """One player row. Full name, shirt number, and - for the player who just came
-    on - a green up arrow and the clock they came on at.
+def _lineup_row(entry: FloorEntry, jersey: str, entering: bool, starter: bool = False) -> str:
+    """One player row. Full name, shirt number, a small grey "S" chip after the name
+    of a starter, and - for the player who just came on - a green up arrow and the
+    clock they came on at.
 
     The arrow slot is emitted on every row, empty where there is nothing to mark,
     so the shirt numbers stay in one column and the five do not shuffle sideways
-    when a substitution lands.
+    when a substitution lands. The chip is grey on purpose: green, red and orange
+    already mean came on / went off / wants attention. The user picked it over a
+    STARTER tag, bold-vs-dim weights and a star from a rendered comparison.
     """
     num = f"#{jersey}" if jersey else DASH
     arrow = f'<span class="arw in">{ARROW_IN}</span>' if entering else '<span class="arw"></span>'
+    chip = '<span class="st">S</span>' if starter else ""
     when = (
         f'<span class="cl">{html.escape(entry.clock_display)} '
         f'{html.escape(period_label(entry.period))}</span>'
@@ -3549,7 +3559,7 @@ def _lineup_row(entry: FloorEntry, jersey: str, entering: bool) -> str:
     return (
         f'<div class="lurow{" in" if entering else ""}">{arrow}'
         f'<span class="num">{html.escape(num)}</span>'
-        f'<span class="nm">{html.escape(entry.name)}</span>{when}</div>'
+        f'<span class="nm">{html.escape(entry.name)}{chip}</span>{when}</div>'
     )
 
 
@@ -3614,11 +3624,13 @@ def render_floor_panel(tg: TrackedGame) -> None:
                 note("Lineup not available yet.")
                 continue
 
+            starter_ids = {p.player_id for p in starters}
             rows = "".join(
                 _lineup_row(
                     entry,
                     jersey_by_id.get(entry.player_id, ""),
                     entry.player_id in entering,
+                    entry.player_id in starter_ids,
                 )
                 for entry in sorted(
                     floor.on_floor,
