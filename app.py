@@ -395,9 +395,10 @@ CSS = """
   border: 1px solid rgba(223,228,236,.45); border-radius: 4px;
   font-size: 10px; font-weight: 800; line-height: 15px; opacity: .8;
 }
-/* Key player star: grey, before the name (the user's pick). Not green or orange,
-   which already mean came on / wants attention. */
-.lurow .kpstar { opacity: .6; margin-right: 6px; font-size: 12px; }
+/* Key player star: white, after the name and before the S chip (the user's pick,
+   changed from grey-before-the-name the same day). Not green or orange, which
+   already mean came on / wants attention. */
+.lurow .kpstar { color: #ffffff; margin-left: 6px; font-size: 12px; }
 .lurow .cl { margin-left: auto; font-size: 12px; font-weight: 700; opacity: .75; }
 /* After the striping, so an entering player wins on equal specificity. */
 .lurow.in { border-left-color: #6fd68d; }
@@ -3541,8 +3542,8 @@ def _jersey_num(jersey: str) -> int:
 
 def _lineup_row(entry: FloorEntry, jersey: str, entering: bool, starter: bool = False,
                 key: bool = False) -> str:
-    """One player row. Full name, shirt number, a grey star before the name of a key
-    player, a small grey "S" chip after the name of a starter, and - for the player
+    """One player row. Full name, shirt number, then after the name a white star for
+    a key player and a small grey "S" chip for a starter, and - for the player
     who just came on - a green up arrow and the clock they came on at.
 
     The arrow slot is emitted on every row, empty where there is nothing to mark,
@@ -3564,7 +3565,7 @@ def _lineup_row(entry: FloorEntry, jersey: str, entering: bool, starter: bool = 
     return (
         f'<div class="lurow{" in" if entering else ""}">{arrow}'
         f'<span class="num">{html.escape(num)}</span>'
-        f'<span class="nm">{star}{html.escape(entry.name)}{chip}</span>{when}</div>'
+        f'<span class="nm">{html.escape(entry.name)}{star}{chip}</span>{when}</div>'
     )
 
 
