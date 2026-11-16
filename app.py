@@ -3535,7 +3535,7 @@ def render_prematch_tab(tg: TrackedGame) -> None:
     market_cards(game_first_fg_row(tg.events, away_id, home_id))
 
     sect("Team First Possession / Field Goal")
-    pills = {"Possession Grouped", "First FG Attempt"}
+    pills = {"Possession Grouped", "First FG Attempt Exact", "First FG Attempt", "First FG Type"}
     st.markdown(
         '<div class="boxed">' + table_html(
             [
