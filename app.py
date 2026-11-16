@@ -604,6 +604,8 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
   padding: 2px 12px; min-height: 0; font-size: 12px; font-weight: 700;
 }
 .st-key-edit_kp button p { font-size: 12px; margin: 0; }
+/* Timeframe Inverse: same height as the Quarter selectbox it sits beside. */
+.st-key-tf_inverse button { width: 100%; min-height: 40px; }
 
 /* The per-card "All N" / "Hide" toggle on a key player. Its key carries the player
    id, so the wrapper class is matched on the prefix rather than in full.
@@ -1974,8 +1976,8 @@ def timeframe_table(events: Sequence[GameEvent], period: int, away_id: str, home
             verdict = DASH
         rows.append({"Quarter": period_label(period), "Time": label, "Yes/No": verdict})
 
-    if TIMEFRAME_ORDER == "reverse":
-        rows.reverse()
+    # Always chronological here. Display order is the trader's Inverse toggle
+    # (`session_state.tf_reversed`, defaulted from TIMEFRAME_ORDER), applied at render.
     return rows
 
 
@@ -2405,6 +2407,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "active_tab": TAB_PREMATCH,
     "show_key_editor": False,  # UI only, like active_tab: never cleared, never saved
     "kp_open": {},             # player id -> make list expanded; UI only, same rules
+    "tf_reversed": TIMEFRAME_ORDER == "reverse",  # Inverse button; UI only, same rules
     "rate_limit_skip_remaining": 0,
     "key_players": {"away": [], "home": []},
     "kp_active": set(),
@@ -2785,6 +2788,11 @@ def toggle_kp_open(player_id: str) -> None:
     """
     open_now = st.session_state.kp_open
     open_now[player_id] = not open_now.get(player_id)
+
+
+def toggle_tf_order() -> None:
+    """Flip the timeframe table between 11:59-11:00 first and 0:59-0:00 first."""
+    st.session_state.tf_reversed = not st.session_state.tf_reversed
 
 
 def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
@@ -3773,11 +3781,15 @@ def render_live_tab(tg: TrackedGame) -> None:
     # choice sticks across auto-refreshes (the widget key holds it).
     if st.session_state.timeframe_period not in periods:
         st.session_state.timeframe_period = min(max(tg.max_period, 1), max(periods))
-    tf_col, _spacer = st.columns([1, 3])
+    tf_col, inv_col, _spacer = st.columns([1, 0.5, 2.5], vertical_alignment="bottom")
     with tf_col:
         period = st.selectbox(
             "Quarter", options=periods, format_func=period_label, key="timeframe_period",
         )
+    with inv_col:
+        # on_click, not `if st.button(...)`, so the table flips in the same run as the
+        # click (see `toggle_kp_open`). The order sticks across polls and quarters.
+        st.button("Inverse", key="tf_inverse", type="secondary", on_click=toggle_tf_order)
 
     # The row being priced: the window the clock is in, or the last one if the
     # quarter is over. Read-only use of the same two helpers the table itself uses.
@@ -3792,10 +3804,10 @@ def render_live_tab(tg: TrackedGame) -> None:
         if idx is not None:
             current_label = windows[idx][0]
 
-    render_timeframe(
-        timeframe_table(tg.events, period, away.team_id, home.team_id, game.is_final),
-        current_label,
-    )
+    tf_rows = timeframe_table(tg.events, period, away.team_id, home.team_id, game.is_final)
+    if st.session_state.tf_reversed:
+        tf_rows.reverse()
+    render_timeframe(tf_rows, current_label)
     # Legend, for the record rather than the screen: Yes = both teams scored inside
     # the exact window (field goals and free throws); No = window complete with both
     # teams not scoring; - = not reached or in progress. The highlighted row is the
