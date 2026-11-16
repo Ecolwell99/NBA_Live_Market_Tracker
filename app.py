@@ -1667,6 +1667,9 @@ def player_first_shot_row(events: Sequence[GameEvent], player_id: str) -> dict[s
 
     Backs: Prematch Player First Field Goal Attempt / Type / First 3pt Attempt.
 
+    First FG Attempt is plain Made / Missed (changed 2026-11-16 from "Made 2" /
+    "Missed 3"); the shot value lives in First FG Type.
+
     First FG Type resolves on the player's first MADE field goal (Made 2 / Made 3),
     not their first attempt - a missed three followed by a made two is "Made 2".
     """
@@ -1674,7 +1677,7 @@ def player_first_shot_row(events: Sequence[GameEvent], player_id: str) -> dict[s
     fgm = _first(events, lambda e: e.kind == KIND_FG and e.made and e.player_id == player_id)
     tpa = _first(events, lambda e: e.kind == KIND_FG and e.points == 3 and e.player_id == player_id)
     return {
-        "First FG Attempt": f"{'Made' if fga.made else 'Missed'} {fga.points}" if fga else DASH,
+        "First FG Attempt": ("Made" if fga.made else "Missed") if fga else DASH,
         "First FG Type": f"Made {fgm.points}" if fgm else DASH,
         "First 3 Attempt": ("Made" if tpa.made else "Missed") if tpa else DASH,
     }
@@ -1687,8 +1690,7 @@ def player_quarter_shot_row(events: Sequence[GameEvent], player_id: str,
     Backs: Quarter N Player First Field Goal Attempt (Made/Missed), First Field Goal
     Type (Made 2/Made 3), First 3pt Attempt (Made/Missed).
 
-    Same rules as `player_first_shot_row`, restricted to one period - except FG Attempt
-    is plain Made/Missed here, because that is how the quarter market settles.
+    Same rules as `player_first_shot_row`, restricted to one period.
     """
     mine = [e for e in events
             if e.period == period and e.kind == KIND_FG and e.player_id == player_id]
