@@ -604,8 +604,8 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
   padding: 2px 12px; min-height: 0; font-size: 12px; font-weight: 700;
 }
 .st-key-edit_kp button p { font-size: 12px; margin: 0; }
-/* Timeframe Inverse: same height as the Quarter selectbox it sits beside. */
-.st-key-tf_inverse button { width: 100%; min-height: 40px; }
+/* Timeframe Invert: same height as the Quarter selectbox it sits beside. */
+.st-key-tf_invert button { width: 100%; min-height: 40px; }
 
 /* The per-card "All N" / "Hide" toggle on a key player. Its key carries the player
    id, so the wrapper class is matched on the prefix rather than in full.
@@ -1976,7 +1976,7 @@ def timeframe_table(events: Sequence[GameEvent], period: int, away_id: str, home
             verdict = DASH
         rows.append({"Quarter": period_label(period), "Time": label, "Yes/No": verdict})
 
-    # Always chronological here. Display order is the trader's Inverse toggle
+    # Always chronological here. Display order is the trader's Invert toggle
     # (`session_state.tf_reversed`, defaulted from TIMEFRAME_ORDER), applied at render.
     return rows
 
@@ -2407,7 +2407,7 @@ DEFAULT_STATE: dict[str, Any] = {
     "active_tab": TAB_PREMATCH,
     "show_key_editor": False,  # UI only, like active_tab: never cleared, never saved
     "kp_open": {},             # player id -> make list expanded; UI only, same rules
-    "tf_reversed": TIMEFRAME_ORDER == "reverse",  # Inverse button; UI only, same rules
+    "tf_reversed": TIMEFRAME_ORDER == "reverse",  # Invert button; UI only, same rules
     "rate_limit_skip_remaining": 0,
     "key_players": {"away": [], "home": []},
     "kp_active": set(),
@@ -3789,7 +3789,7 @@ def render_live_tab(tg: TrackedGame) -> None:
     with inv_col:
         # on_click, not `if st.button(...)`, so the table flips in the same run as the
         # click (see `toggle_kp_open`). The order sticks across polls and quarters.
-        st.button("Inverse", key="tf_inverse", type="secondary", on_click=toggle_tf_order)
+        st.button("Invert", key="tf_invert", type="secondary", on_click=toggle_tf_order)
 
     # The row being priced: the window the clock is in, or the last one if the
     # quarter is over. Read-only use of the same two helpers the table itself uses.
