@@ -521,6 +521,9 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpnm.hot):has(.kpbody):not(
 }
 .pill.g { background: #00cc44; color: #000000; }
 .pill.r { background: #cc2200; color: #ffffff; }
+/* Three-pointers get square corners, so Made 3 and Made 2 differ at a glance
+   without a new colour (green / red keep meaning made / missed). */
+.pill.sq { border-radius: 3px; }
 
 /* The three First Field Goal cards. */
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
@@ -2586,11 +2589,15 @@ _PILL_GREEN = frozenset({"Made", "Made 2", "Made 3", "Score"})
 _PILL_RED = frozenset({"Missed", "Missed 2", "Missed 3", "No Score"})
 
 
+_PILL_SQUARE = frozenset({"Made 3", "Missed 3"})
+
+
 def _pill_cell(value: str) -> str:
+    sq = " sq" if value in _PILL_SQUARE else ""
     if value in _PILL_GREEN:
-        return f'<span class="pill g">{html.escape(value)}</span>'
+        return f'<span class="pill g{sq}">{html.escape(value)}</span>'
     if value in _PILL_RED:
-        return f'<span class="pill r">{html.escape(value)}</span>'
+        return f'<span class="pill r{sq}">{html.escape(value)}</span>'
     return _render_cell(value)
 
 
