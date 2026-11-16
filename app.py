@@ -471,6 +471,10 @@ CSS = """
    flash depends on that bonus rule matching. */
 .kpnm { font-size: 13px; font-weight: 700; color: var(--text-color); line-height: 18px; }
 .kpnm.hot { color: #00cc44; }
+/* Open market beside the name: the board after his last made FG. Never wraps
+   mid-score; the label is dimmed so the number is what the eye lands on. */
+.kpopen { margin-left: 10px; white-space: nowrap; font-weight: 700; }
+.kpopen .lbl { font-weight: 400; opacity: .55; margin-right: 5px; }
 .kpnone { font-size: 13px; color: var(--text-color); opacity: .45; }
 /* Pulls the shot list up under the title row: Streamlit's 1rem block gap is too much
    air between a name and the table that belongs to it. A margin, so if the gap ever
@@ -2823,6 +2827,14 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
     tab that repolls every few seconds it gets left behind on screen.
     """
     makes = player_market_events(tg.events, tg.abbr_for, player_id)
+    # The market open on this player right now: named after the board straight after
+    # his last made field goal, which is the anchor his NEXT basket will carry. 0-0
+    # before he has scored, matching the oldest row of his list. A make whose board
+    # went backwards (`score_suspect`) has no anchor, so the newest trusted one stands.
+    open_market = next(
+        (r.new_market_anchor_score for r in makes if r.new_market_anchor_score is not None),
+        (0, 0),
+    )
     hot = any(a["player_id"] == player_id for a in st.session_state.kp_alerts)
     # Read AFTER any on_click callback has run, so the label below and the list it
     # controls always agree - see `toggle_kp_open`.
@@ -2834,7 +2846,9 @@ def key_player_card(tg: TrackedGame, player_id: str, display: str) -> None:
         name_col, btn_col = st.columns([4, 1], gap="small", vertical_alignment="center")
         with name_col:
             st.markdown(
-                f'<div class="kpnm{" hot" if hot else ""}">{html.escape(display)}</div>',
+                f'<div class="kpnm{" hot" if hot else ""}">{html.escape(display)}'
+                f'<span class="kpopen"><span class="lbl">Open market</span>'
+                f'{_anchor_text(open_market)}</span></div>',
                 unsafe_allow_html=True,
             )
         with btn_col:
