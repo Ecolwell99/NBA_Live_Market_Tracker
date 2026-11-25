@@ -1050,6 +1050,9 @@ KIND_SUB = "sub"
 # Defensive rebounds end the shooting team's possession (Team Possession Result).
 # Offensive rebounds stay in KIND_OTHER: they continue the possession they follow.
 KIND_DEF_REBOUND = "def_rebound"
+# Jump balls get their own kind so the Prematch tip winner can find the opening tip.
+# Outside TRACKED_KINDS, like substitutions.
+KIND_JUMP_BALL = "jump_ball"
 KIND_OTHER = "other"
 
 # Kinds that participate in stat-correction comparison. Free throws, rebounds,
@@ -1087,6 +1090,14 @@ _SUB_TEXT_RE = re.compile(r"^(?P<incoming>.+?) enters the game for (?P<outgoing>
 # rebounds across 37 games (2025-10-28, 2025-12-25, 2026-01-15, 2026-03-01,
 # 2026-04-08). The text check is the same backstop as the substitution one.
 ESPN_DEF_REBOUND_TYPE_ID = "155"
+
+# ESPN's jump ball play: text "A vs. B (C gains possession)", `team.id` = the team that
+# gained possession, participants = [jumper, jumper, player gaining possession].
+# Measured on 51 games (2026-11-18 .. 11-24): 50 had an opening tip at 1Q 12:00 (one
+# game's feed simply omits it); in 50/50 exactly one jumper was on the possessing team
+# and it was always participants[0], so `player_id` is the tip winner. The text's name
+# order is NOT usable - 28/50 list the loser first.
+ESPN_JUMP_BALL_TYPE_ID = "615"
 
 
 @dataclass(frozen=True)
@@ -1229,6 +1240,11 @@ def _is_def_rebound(type_id: str, type_text: str) -> bool:
     return type_id == ESPN_DEF_REBOUND_TYPE_ID or type_text.lower() == "defensive rebound"
 
 
+def _is_jump_ball(type_id: str, type_text: str) -> bool:
+    """Is this play a jump ball? Exact text match only - "Jump Shot" must not hit."""
+    return type_id == ESPN_JUMP_BALL_TYPE_ID or type_text.lower() in ("jumpball", "jump ball")
+
+
 def _sub_names_from_text(description: str) -> tuple[str, str]:
     """(coming on, going off) read from 'X enters the game for Y'.
 
@@ -1336,6 +1352,8 @@ def normalise_plays(payload: dict, name_map: dict[str, str]) -> list[GameEvent]:
             kind, points = KIND_SUB, 0
         elif _is_def_rebound(type_id, type_text):
             kind, points = KIND_DEF_REBOUND, 0
+        elif _is_jump_ball(type_id, type_text):
+            kind, points = KIND_JUMP_BALL, 0
         else:
             kind, points = _classify_play(
                 short_desc, type_text, description, shooting, pts_attempted, scoring
@@ -1581,6 +1599,23 @@ def game_first_fg_row(events: Sequence[GameEvent], away_id: str, home_id: str) -
         "First FG Team": side,
         "First FG Type": f"Made {fg.points}",
     }
+
+
+def opening_tip(events: Sequence[GameEvent]) -> GameEvent | None:
+    """The opening jump ball: 1Q at 12:00. Pinned to the clock so a held ball later in
+    the quarter can never stand in for it in a feed that omits the tip. Its `player_id`
+    is the tip winner and `team_id` his team - see ESPN_JUMP_BALL_TYPE_ID."""
+    return _first(events, lambda e: e.kind == KIND_JUMP_BALL and e.period == 1
+                  and e.clock_seconds == REGULATION_PERIOD_SECONDS)
+
+
+def opening_tip_missing(events: Sequence[GameEvent]) -> bool:
+    """True once play has run past 12:00 with no opening tip logged (1 game in 51
+    measured), so the card says so rather than waiting forever."""
+    return opening_tip(events) is None and any(
+        e.period > 1 or (e.clock_seconds is not None and e.clock_seconds < REGULATION_PERIOD_SECONDS)
+        for e in events
+    )
 
 
 # Free-throw trip position from the play type: "Free Throw - 1 of 2", "Free Throw -
@@ -3493,6 +3528,31 @@ def first_event_cards(rows: Sequence[dict], teams: Sequence[TeamInfo | None]) ->
     st.markdown(f'<div class="cards">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
+def tip_winner_card(tg: TrackedGame) -> None:
+    """One card: the player who won the opening tip and his team, in that team's
+    accent and logo. Neutral slate before the tip, like the Game First card."""
+    tip = opening_tip(tg.events)
+    game = tg.game
+    team = {game.away.team_id: game.away, game.home.team_id: game.home}.get(tip.team_id) if tip else None
+    if tip:
+        player, team_name = tip.player_name or tip.player_id or DASH, team.display_name if team else DASH
+    elif opening_tip_missing(tg.events):
+        player = team_name = "Not in feed"
+    else:
+        player = team_name = DASH
+    accent = team_accent(team) if team else _NEUTRAL_ACCENT
+    logo = _small_logo(team) if team else ""
+    cells = "".join(
+        f'<div><div class="lbl">{k}</div><div class="v">{html.escape(v)}</div></div>'
+        for k, v in (("Player", player), ("Team", team_name))
+    )
+    st.markdown(
+        f'<div class="cards"><div class="tcard" style="--c:{accent};">'
+        f'<div class="ttl">{logo}Tip Winner</div><div class="grid">{cells}</div></div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 # For a banner that is no one team's (Made Field Goals). Slate, not the theme blue: the
 # blue is within a shade of the Knicks' accent (#3a78e0), so in a Knicks game the
 # mixed panel read as a third Knicks panel.
@@ -3530,6 +3590,9 @@ def player_panel(team: TeamInfo, rows: Sequence[dict], title: str = "") -> None:
 def render_prematch_tab(tg: TrackedGame) -> None:
     game = tg.game
     away_id, home_id = game.away.team_id, game.home.team_id
+
+    sect("Opening Tip")
+    tip_winner_card(tg)
 
     sect("First Field Goal")
     market_cards(game_first_fg_row(tg.events, away_id, home_id))
